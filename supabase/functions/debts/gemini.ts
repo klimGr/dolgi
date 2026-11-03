@@ -1,7 +1,7 @@
 // Модель Google Gemini через REST API (есть бесплатный тариф). Включается, если задан GEMINI_API_KEY.
-// Подходят два вида ключей Google:
-//   • ключ Google AI Studio (AIza…) — Gemini API, generativelanguage.googleapis.com;
-//   • ключ Vertex AI в экспресс-режиме (AQ.…) — aiplatform.googleapis.com.
+// Подходят ключи Google AI Studio (старые AIza… и новые AQ.…) — Gemini API, generativelanguage.googleapis.com.
+// Ключ AQ.… бывает и от Vertex AI в экспресс-режиме — тогда он работает только с aiplatform.googleapis.com,
+// поэтому для AQ.… сначала пробуем Gemini API, потом Vertex.
 // Формат запросов у них общий и сверен с официальным SDK @google/genai: generateContent, functionDeclarations
 // с parametersJsonSchema, ответы инструментов — functionResponse {id, name, response: {output|error}}.
 import { AiError, type RunArgs, runTool, SYSTEM, TOOLS } from './assistant.ts';
@@ -34,16 +34,24 @@ function errorFor(status: number, body: string): AiError {
   return new AiError('bad', body);
 }
 
-export const isVertexKey = (key: string) => key.startsWith('AQ.');
+/** Новый формат ключа: AI Studio или Vertex — выясняем пробными запросами */
+export const isNewKey = (key: string) => key.startsWith('AQ.');
 
 /** Модели, которые пробуем по очереди, если DEBTS_GEMINI_MODEL не задан */
 export const MODEL_CANDIDATES = ['gemini-flash-latest', 'gemini-3-flash', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
 
-/** Как передать ключ: в заголовке x-goog-api-key, в адресе (?key=, как в документации экспресс-режима Vertex) или как Bearer */
+/** Куда и как передать ключ: в заголовке x-goog-api-key, в адресе (?key=, как в документации экспресс-режима Vertex) или как Bearer */
 type Auth = 'header' | 'query' | 'bearer';
+interface Way { api: 'studio' | 'vertex'; auth: Auth }
 
-function request(model: string, key: string, auth: Auth, body: unknown): [string, RequestInit] {
-  const base = isVertexKey(key)
+function waysFor(key: string): Way[] {
+  const studio: Way = { api: 'studio', auth: 'header' };
+  if (!isNewKey(key)) return [studio];
+  return [studio, ...(['query', 'header', 'bearer'] as Auth[]).map(auth => ({ api: 'vertex' as const, auth }))];
+}
+
+function request(model: string, key: string, { api, auth }: Way, body: unknown): [string, RequestInit] {
+  const base = api === 'vertex'
     ? `https://aiplatform.googleapis.com/v1/publishers/google/models/${model}:generateContent`
     : `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -55,8 +63,8 @@ function request(model: string, key: string, auth: Auth, body: unknown): [string
 
 async function generate(contents: Content[]): Promise<GeminiResponse> {
   const key = GEMINI_API_KEY();
-  const { model, auth } = await working();
-  const [url, init] = request(model, key, auth, {
+  const { model, way } = await working();
+  const [url, init] = request(model, key, way, {
     systemInstruction: { parts: [{ text: SYSTEM }] },
     contents,
     tools: [{ functionDeclarations: declarations }],
@@ -127,13 +135,15 @@ export async function runGemini({ history, context, attachments, userText, ctx }
 }
 
 /* ---------- подбор модели и проверка ключа ---------- */
-let found: { model: string; auth: Auth } | null = null;
+let found: { model: string; way: Way } | null = null;
+/** Для тестов: забыть найденную модель */
+export const forgetChoice = () => void (found = null);
 
 /** Модель и способ передачи ключа, которые работают с этим ключом (запоминаем до перезапуска функции) */
 async function working() {
   if (found) return found;
-  // Ключ AI Studio с заданной моделью проверять незачем; для Vertex узнаём, как передавать ключ
-  if (GEMINI_MODEL() && !isVertexKey(GEMINI_API_KEY())) return { model: GEMINI_MODEL(), auth: 'header' as Auth };
+  // Старый ключ AI Studio с заданной моделью проверять незачем; для нового узнаём, куда и как его передавать
+  if (GEMINI_MODEL() && !isNewKey(GEMINI_API_KEY())) return { model: GEMINI_MODEL(), way: waysFor(GEMINI_API_KEY())[0] };
   const models = GEMINI_MODEL() ? [GEMINI_MODEL()] : MODEL_CANDIDATES;
   const check = await checkGemini(models);
   const ok = check.results.find(r => r.status === 200);
@@ -141,28 +151,26 @@ async function working() {
     const last = check.results.at(-1);
     throw errorFor(last?.status ?? 500, last?.message ?? 'нет ответа');
   }
-  found = { model: ok.model, auth: ok.auth };
+  found = { model: ok.model, way: { api: ok.api, auth: ok.auth } };
   return found;
 }
 
 /** Пробный запрос к каждой модели по очереди — для /ai-check и подбора модели. Ключ не раскрывается */
 export async function checkGemini(models: string[]) {
   const key = GEMINI_API_KEY();
-  const results: { model: string; auth: Auth; status: number; message: string }[] = [];
-  // Ключ AI Studio всегда в заголовке; для ключа Vertex пробуем все способы
-  const auths: Auth[] = isVertexKey(key) ? ['query', 'header', 'bearer'] : ['header'];
+  const results: (Way & { model: string; status: number; message: string })[] = [];
   const probe = {
     systemInstruction: { parts: [{ text: 'Отвечай одним словом.' }] },
     contents: [{ role: 'user', parts: [{ text: 'Скажи «ок».' }] }],
     tools: [{ functionDeclarations: declarations }],
   };
-  for (const model of models) for (const auth of auths) {
-    // способ, который уже дал «ключ не тот», для следующих моделей не повторяем
-    if (results.some(r => r.auth === auth && r.status === 401)) continue;
+  for (const model of models) for (const way of waysFor(key)) {
+    // способ, который уже дал «ключ не тот» или «нет доступа», для следующих моделей не повторяем
+    if (results.some(r => r.api === way.api && r.auth === way.auth && (r.status === 401 || r.status === 403))) continue;
     let status = 0;
     let message = '';
     try {
-      const [url, init] = request(model, key, auth, probe);
+      const [url, init] = request(model, key, way, probe);
       const res = await fetch(url, { ...init, signal: AbortSignal.timeout(30_000) });
       status = res.status;
       const body = await res.text();
@@ -176,8 +184,8 @@ export async function checkGemini(models: string[]) {
     } catch (e) {
       message = String(e).slice(0, 200);
     }
-    results.push({ model, auth, status, message });
-    if (status === 200) return { vertex: isVertexKey(key), keyLength: key.length, results };
+    results.push({ ...way, model, status, message });
+    if (status === 200) return { newKey: isNewKey(key), keyLength: key.length, results };
   }
-  return { vertex: isVertexKey(key), keyLength: key.length, results };
+  return { newKey: isNewKey(key), keyLength: key.length, results };
 }

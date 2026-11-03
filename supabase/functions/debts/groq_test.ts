@@ -13,8 +13,8 @@ Deno.test({ name: 'Groq: ключ Google не подошёл — отвечае�
   Deno.env.delete('DEBTS_GEMINI_MODEL');
   Deno.env.delete('DEBTS_AI');
 
-  // Google: все три способа передать ключ — 401
-  geminiScript.push(bad, bad, bad);
+  // Google: Gemini API и все три способа Vertex — 401
+  geminiScript.push(bad, bad, bad, bad);
   groqScript.push(
     answer({ content: 'ДОГОВОР ЗАЙМА. Сумма 10 000 руб. Вернуть до 15.11.2026. Продление 1 200 руб.' }), // фото → текст
     answer({ content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'add_debt', arguments: JSON.stringify({ name: 'Займ у жены', kind: 'other', balance: 10000, min_payment: 10000, next_payment: '2026-11-15', notes: 'Продление — 1 200 ₽' }) } }] }),
@@ -27,7 +27,7 @@ Deno.test({ name: 'Groq: ключ Google не подошёл — отвечае�
   assert(r.changed && r.reply.includes('10 000'), 'ответ: ' + JSON.stringify(r));
   const d = tables.debts.find(x => x.name === 'Займ у жены');
   assert(d && Number(d.balance) === 10000 && d.pay_day === 15 && JSON.stringify(d.files).includes('P1'), 'долг: ' + JSON.stringify(d));
-  assert(geminiRequests.length === 3 && geminiScript.length === 0, 'Google пробовали трижды');
+  assert(geminiRequests.length === 4 && geminiScript.length === 0, 'Google пробовали четырежды');
 
   const [vision, first, second] = groqRequests;
   assert(String(vision.body.model).length > 0 && JSON.stringify(vision.body).includes('image_url'), 'фото → модель со зрением');

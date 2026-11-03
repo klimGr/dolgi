@@ -74,12 +74,31 @@ Deno.test({ name: 'Gemini: договор → add_debt → ответ; плат�
   assert(geminiScript.length === 0, 'не все ответы использованы');
 });
 
+Deno.test({ name: 'Gemini: новый ключ AI Studio (AQ.) работает с Gemini API, Vertex не трогаем', sanitizeOps: false, sanitizeResources: false }, async () => {
+  const { forgetChoice } = await import('./gemini.ts');
+  forgetChoice();
+  Deno.env.set('GEMINI_API_KEY', 'AQ.studio-test-key');
+  Deno.env.delete('DEBTS_GEMINI_MODEL');
+  Deno.env.delete('DEBTS_AI');
+  geminiRequests.length = 0;
+  geminiScript.push(reply([{ text: 'ок' }]), reply([{ text: 'Привет!' }]));
+  const r = await chat({ chatId: 44, me, text: 'привет', attachments: [] });
+  assert(r.reply === 'Привет!', 'ответ: ' + r.reply);
+  const q = geminiRequests;
+  assert(q.length === 2 && q.every(x => x.url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:')), 'Gemini API: ' + q.map(x => x.url));
+  assert(q.every(x => x.headers.get('x-goog-api-key') === 'AQ.studio-test-key' && !x.url.includes('?key=')), 'ключ в заголовке');
+  assert(geminiScript.length === 0, 'не все ответы использованы');
+});
+
 Deno.test({ name: 'Gemini: ключ Vertex AI (AQ.) — подбор способа передачи ключа и модели', sanitizeOps: false, sanitizeResources: false }, async () => {
+  const { forgetChoice } = await import('./gemini.ts');
+  forgetChoice();
   Deno.env.set('GEMINI_API_KEY', 'AQ.vertex-test-key');
   Deno.env.delete('DEBTS_GEMINI_MODEL');
   Deno.env.delete('DEBTS_AI');
   geminiRequests.length = 0;
   geminiScript.push(
+    { status: 401, body: '{"error":{"status":"UNAUTHENTICATED","message":"API key not valid"}}' }, // Gemini API такой ключ не берёт
     { status: 401, body: '{"error":{"status":"UNAUTHENTICATED","message":"API key not valid"}}' }, // ?key= не подошёл
     { status: 404, body: '{"error":{"status":"NOT_FOUND","message":"model not found"}}' }, // в заголовке: модели нет
     { status: 401, body: '{"error":{"status":"UNAUTHENTICATED","message":"API key not valid"}}' }, // Bearer не подошёл
@@ -88,7 +107,8 @@ Deno.test({ name: 'Gemini: ключ Vertex AI (AQ.) — подбор спосо�
   );
   const r = await chat({ chatId: 43, me: { id: '43', name: 'Маша' }, text: 'привет', attachments: [] });
   assert(r.reply === 'Привет! Чем помочь?', 'ответ: ' + r.reply);
-  const q = geminiRequests;
+  assert(geminiRequests[0].url.startsWith('https://generativelanguage.googleapis.com/'), 'сначала Gemini API');
+  const q = geminiRequests.slice(1);
   assert(q.every(x => x.url.startsWith('https://aiplatform.googleapis.com/v1/publishers/google/models/')), 'адрес Vertex: ' + q[0].url);
   assert(q[0].url.includes('/gemini-flash-latest:') && q[0].url.includes('?key=AQ.vertex-test-key'), 'первая попытка — ключ в адресе: ' + q[0].url);
   assert(q[1].headers.get('x-goog-api-key') === 'AQ.vertex-test-key' && !q[1].url.includes('?key='), 'вторая — в заголовке');
