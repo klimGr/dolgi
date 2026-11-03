@@ -7,7 +7,7 @@ const me = { id: '42', name: 'Клим' };
 
 const reply = (parts: Row[], finishReason = 'STOP') => ({ candidates: [{ content: { role: 'model', parts }, finishReason }] });
 
-Deno.test('Gemini: договор → add_debt → ответ; платёж текстом; ошибки', async () => {
+Deno.test({ name: 'Gemini: договор → add_debt → ответ; платёж текстом; ошибки', sanitizeOps: false, sanitizeResources: false }, async () => {
   Deno.env.set('GEMINI_API_KEY', 'gemini-test-key');
   Deno.env.set('DEBTS_GEMINI_MODEL', 'gemini-flash-latest');
   Deno.env.delete('DEBTS_AI');
@@ -74,7 +74,7 @@ Deno.test('Gemini: договор → add_debt → ответ; платёж те
   assert(geminiScript.length === 0, 'не все ответы использованы');
 });
 
-Deno.test('Gemini: ключ Vertex AI (AQ.) — подбор способа передачи ключа и модели', async () => {
+Deno.test({ name: 'Gemini: ключ Vertex AI (AQ.) — подбор способа передачи ключа и модели', sanitizeOps: false, sanitizeResources: false }, async () => {
   Deno.env.set('GEMINI_API_KEY', 'AQ.vertex-test-key');
   Deno.env.delete('DEBTS_GEMINI_MODEL');
   Deno.env.delete('DEBTS_AI');

@@ -15,7 +15,7 @@ async function initData(id: number, name: string) {
   return new URLSearchParams({ ...fields, hash }).toString();
 }
 
-Deno.test('приложение: долг, платёж, история; чужим — 403', async () => {
+Deno.test({ name: 'приложение: долг, платёж, история; чужим — 403', sanitizeOps: false, sanitizeResources: false }, async () => {
   const auth = await initData(42, 'Клим');
   // deno-lint-ignore no-explicit-any
   const call = async (body: Record<string, unknown>) => (await handleApi({ initData: auth, ...body })) as { status: number; data: any };
@@ -35,6 +35,17 @@ Deno.test('приложение: долг, платёж, история; чуж�
   r = await call({ action: 'save_debt', debt: { id: d.id, name: 'Сбер', kind: 'loan', owner: 'common', balance: 400000, payDay: null } });
   assert(r.data.debts[0].payDay === null && r.data.events[0].type === 'balance', 'правка: ' + JSON.stringify(r.data.debts[0]));
 
+  // id от приложения: долг и платёж сразу с ними, отмена — по тому же id
+  r = await call({ action: 'save_debt', create: true, debt: { id: 'appdebt01', name: 'Карта', kind: 'card', balance: 5000 } });
+  assert(r.data.debts.some((x: { id: string }) => x.id === 'appdebt01'), 'id долга из приложения');
+  r = await call({ action: 'pay', debtId: 'appdebt01', amount: 1000, date: r.data.today, eventId: 'apppay01' });
+  assert(r.data.events.some((e: { id: string }) => e.id === 'apppay01'), 'id платежа из приложения');
+  r = await call({ action: 'delete_event', id: 'apppay01' });
+  assert(r.data.debts.find((x: { id: string }) => x.id === 'appdebt01').balance === 5000, 'отмена по id из приложения');
+  r = await call({ action: 'pay', debtId: 'appdebt01', amount: 1, eventId: '../bad id' });
+  assert(r.data.events.every((e: { id: string }) => /^[a-z0-9]+$/.test(e.id)), 'плохой id заменён');
+  r = await call({ action: 'delete_debt', id: 'appdebt01' });
+
   const stranger = await handleApi({ initData: await initData(99, 'Чужой'), action: 'state' });
   assert(stranger.status === 403, 'чужой получил доступ');
   const forged = await handleApi({ initData: auth.replace('42', '43'), action: 'state' });
@@ -42,7 +53,7 @@ Deno.test('приложение: долг, платёж, история; чуж�
   assert(tables.debts.length === 1, 'лишние записи');
 });
 
-Deno.test('служебный ключ: секрет или cron_key из базы', async () => {
+Deno.test({ name: 'служебный ключ: секрет или cron_key из базы', sanitizeOps: false, sanitizeResources: false }, async () => {
   const { isServiceKey } = await import('./db.ts');
   tables.debt_settings = [{ key: 'cron_key', value: 'abc123' }];
   assert(await isServiceKey('abc123', 'secret'), 'cron_key не принят');

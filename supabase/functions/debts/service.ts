@@ -39,17 +39,20 @@ const colorOf = (v: unknown) => {
   const n = Number(v);
   return Number.isInteger(n) && n >= 1 && n <= 8 ? n : null;
 };
+// Мини-приложение присылает свои id, чтобы показать изменение сразу, не дожидаясь ответа сервера
+const idOr = (v: unknown) => (typeof v === 'string' && /^[a-z0-9]{6,32}$/.test(v) ? v : uid());
 
-export async function state() {
-  const [debts, events, members] = await Promise.all([db.debts(), db.events(), db.members()]);
+/** members можно передать готовым, чтобы не читать участников второй раз */
+export async function state(people?: Promise<db.Member[]>) {
+  const [debts, events, members] = await Promise.all([db.debts(), db.events(), people ?? db.members()]);
   return { debts, events, members: members.map(m => ({ id: m.id, name: m.name })), today: today(TZ) };
 }
 
-export async function createDebt(input: DebtInput, file?: DebtFile): Promise<Debt> {
+export async function createDebt(input: DebtInput, file?: DebtFile, id?: string): Promise<Debt> {
   const all = await db.debts();
   const balance = amount(input.balance) ?? amount(input.start) ?? 0;
   const d: Debt = {
-    id: uid(),
+    id: idOr(id),
     name: text(input.name) || 'Долг',
     kind: kindOf(input.kind),
     owner: ownerOf(input.owner),
@@ -73,7 +76,7 @@ export async function createDebt(input: DebtInput, file?: DebtFile): Promise<Deb
   return d;
 }
 
-export async function updateDebt(id: string, input: DebtInput, by: string, file?: DebtFile): Promise<Debt> {
+export async function updateDebt(id: string, input: DebtInput, by: string, file?: DebtFile, eventId?: string): Promise<Debt> {
   const d = await db.debt(id);
   if (!d) throw new UserError('Долг не найден');
   const has = (k: keyof DebtInput) => input[k] !== undefined;
@@ -98,7 +101,7 @@ export async function updateDebt(id: string, input: DebtInput, by: string, file?
   // Остаток меняем через событие, чтобы было видно в истории
   const newBalance = has('balance') ? amount(input.balance) : null;
   if (newBalance !== null && newBalance !== d.balance) {
-    await db.insertEvent(applyBalance(d, newBalance, t, by, 'Остаток изменён вручную'));
+    await db.insertEvent({ ...applyBalance(d, newBalance, t, by, 'Остаток изменён вручную'), id: idOr(eventId) });
   }
   d.start = Math.max(d.start, d.balance);
   if (has('closed')) d.closed = input.closed === true;
@@ -111,7 +114,7 @@ export async function removeDebt(id: string) {
   await db.deleteDebt(id);
 }
 
-export async function pay(debtId: string, sum: unknown, date: unknown, by: string, note = '') {
+export async function pay(debtId: string, sum: unknown, date: unknown, by: string, note = '', eventId?: string) {
   const d = await db.debt(debtId);
   if (!d) throw new UserError('Долг не найден');
   const value = amount(sum);
@@ -120,12 +123,13 @@ export async function pay(debtId: string, sum: unknown, date: unknown, by: strin
   const day = isDate(date) ? date : t;
   const recent = await db.events(100, debtId);
   const e = applyPayment(d, recent, value, day, by, text(note, 300), t);
+  e.id = idOr(eventId);
   await db.insertEvent(e);
   await db.saveDebt(d);
   return { debt: d, event: e };
 }
 
-export async function setBalance(debtId: string, sum: unknown, date: unknown, by: string, note = '', type: EventType = 'balance') {
+export async function setBalance(debtId: string, sum: unknown, date: unknown, by: string, note = '', type: EventType = 'balance', eventId?: string) {
   const d = await db.debt(debtId);
   if (!d) throw new UserError('Долг не найден');
   const value = amount(sum);
@@ -133,6 +137,7 @@ export async function setBalance(debtId: string, sum: unknown, date: unknown, by
   const t = today(TZ);
   const e = applyBalance(d, type === 'charge' ? d.balance + value : value, isDate(date) ? date : t, by, text(note, 300), type);
   if (type === 'charge') e.amount = value;
+  e.id = idOr(eventId);
   await db.insertEvent(e);
   await db.saveDebt(d);
   return { debt: d, event: e };

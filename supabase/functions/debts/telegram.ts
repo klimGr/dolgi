@@ -74,6 +74,8 @@ async function hmac(key: Uint8Array, data: string) {
 
 const hex = (b: Uint8Array) => [...b].map(x => x.toString(16).padStart(2, '0')).join('');
 
+let secretKey: Promise<Uint8Array> | undefined; // зависит только от токена — считаем один раз
+
 export interface TgUser { id: number; first_name?: string; last_name?: string; username?: string }
 
 /** Проверка подписи initData по алгоритму Telegram. Возвращает пользователя или null */
@@ -84,7 +86,8 @@ export async function verifyInitData(initData: string, maxAgeSec = 30 * 86400): 
   if (!hash) return null;
   params.delete('hash');
   const check = [...params.entries()].map(([k, v]) => `${k}=${v}`).sort().join('\n');
-  const secret = await hmac(enc.encode('WebAppData'), BOT_TOKEN);
+  secretKey ??= hmac(enc.encode('WebAppData'), BOT_TOKEN);
+  const secret = await secretKey;
   const sig = hex(await hmac(secret, check));
   if (sig.length !== hash.length) return null;
   let diff = 0;

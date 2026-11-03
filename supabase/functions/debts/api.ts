@@ -17,7 +17,9 @@ export async function handleApi(body: Body): Promise<{ status: number; data: unk
   if (!user) return { status: 401, data: { error: 'Не удалось проверить вход через Telegram' } };
   if (!isAllowed(user.id)) return { status: 403, data: { error: 'Нет доступа', id: user.id } };
   const by = userName(user);
-  await db.touchMember(user.id, by);
+  // Запоминаем участника параллельно с операцией: на ответ это время не тратим
+  const touching = db.touchMember(user.id, by).catch(e => console.error('touch', e));
+  const eventId = typeof body.eventId === 'string' ? body.eventId : undefined;
 
   try {
     switch (body.action) {
@@ -25,21 +27,21 @@ export async function handleApi(body: Body): Promise<{ status: number; data: unk
         break;
       case 'save_debt': {
         const input = (body.debt || {}) as svc.DebtInput & { id?: string };
-        if (input.id) await svc.updateDebt(input.id, input, by);
-        else await svc.createDebt(input);
+        if (input.id && !body.create) await svc.updateDebt(input.id, input, by, undefined, eventId);
+        else await svc.createDebt(input, undefined, input.id);
         break;
       }
       case 'delete_debt':
         await svc.removeDebt(String(body.id));
         break;
       case 'pay':
-        await svc.pay(String(body.debtId), body.amount, body.date, by, String(body.note || ''));
+        await svc.pay(String(body.debtId), body.amount, body.date, by, String(body.note || ''), eventId);
         break;
       case 'balance':
-        await svc.setBalance(String(body.debtId), body.amount, body.date, by, String(body.note || ''), 'balance');
+        await svc.setBalance(String(body.debtId), body.amount, body.date, by, String(body.note || ''), 'balance', eventId);
         break;
       case 'charge':
-        await svc.setBalance(String(body.debtId), body.amount, body.date, by, String(body.note || ''), 'charge');
+        await svc.setBalance(String(body.debtId), body.amount, body.date, by, String(body.note || ''), 'charge', eventId);
         break;
       case 'delete_event':
         await svc.removeEvent(String(body.id));
@@ -67,7 +69,8 @@ export async function handleApi(body: Body): Promise<{ status: number; data: unk
     throw e;
   }
 
-  const [st, people, bot] = await Promise.all([svc.state(), db.members(), botUsername()]);
-  const me = people.find(m => m.id === String(user.id));
+  const people = touching.then(() => db.members());
+  const [st, all, bot] = await Promise.all([svc.state(people), people, botUsername()]);
+  const me = all.find(m => m.id === String(user.id));
   return { status: 200, data: { ...st, me: { id: String(user.id), name: by, subscribed: !!me?.chatId }, bot } };
 }

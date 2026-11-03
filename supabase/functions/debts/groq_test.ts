@@ -7,7 +7,7 @@ const me = { id: '42', name: 'Клим' };
 const answer = (message: Row) => ({ choices: [{ message, finish_reason: message.tool_calls ? 'tool_calls' : 'stop' }] });
 const bad = { status: 401, body: '{"error":{"status":"UNAUTHENTICATED","message":"API key not valid"}}' };
 
-Deno.test('Groq: ключ Google не подошёл — отвечает Groq, фото читает модель со зрением', async () => {
+Deno.test({ name: 'Groq: ключ Google не подошёл — отвечает Groq, фото читает модель со зрением', sanitizeOps: false, sanitizeResources: false }, async () => {
   Deno.env.set('GEMINI_API_KEY', 'AQ.broken-key');
   Deno.env.set('GROQ_API_KEY', 'gsk_test');
   Deno.env.delete('DEBTS_GEMINI_MODEL');

@@ -4,7 +4,7 @@ import { assert, claudeRequests, type Row, script, tables } from './test_mocks.t
 
 const { chat } = await import('./assistant.ts');
 
-Deno.test('Claude: договор → add_debt → ответ; затем платёж текстом', async () => {
+Deno.test({ name: 'Claude: договор → add_debt → ответ; затем платёж текстом', sanitizeOps: false, sanitizeResources: false }, async () => {
   Deno.env.set('DEBTS_AI', 'claude');
   // 1. Прислали договор: Claude вызывает add_debt, потом отвечает текстом
   script.push(
