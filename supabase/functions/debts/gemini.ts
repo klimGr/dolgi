@@ -37,8 +37,8 @@ function errorFor(status: number, body: string): AiError {
 /** Новый формат ключа: AI Studio или Vertex — выясняем пробными запросами */
 export const isNewKey = (key: string) => key.startsWith('AQ.');
 
-/** Модели, которые пробуем по очереди, если DEBTS_GEMINI_MODEL не задан */
-export const MODEL_CANDIDATES = ['gemini-flash-latest', 'gemini-3-flash', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
+/** Модели, которые пробуем по очереди, если DEBTS_GEMINI_MODEL не задан. «latest» у Google бывает перегружена (503) — она не первая */
+export const MODEL_CANDIDATES = ['gemini-3-flash-preview', 'gemini-flash-latest', 'gemini-3-flash', 'gemini-2.5-flash'];
 
 /** Куда и как передать ключ: в заголовке x-goog-api-key, в адресе (?key=, как в документации экспресс-режима Vertex) или как Bearer */
 type Auth = 'header' | 'query' | 'bearer';
