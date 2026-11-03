@@ -2,3 +2,4 @@
 /delo/
 .env
 supabase/.temp/
+.claude/

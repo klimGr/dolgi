@@ -190,6 +190,7 @@ body.sub #app { padding-bottom: calc(32px + env(safe-area-inset-bottom)); }
 .next-main { flex: 1; min-width: 0; }
 .next-title { font-size: 17px; font-weight: 600; line-height: 1.25; display: flex; align-items: baseline; gap: 8px; }
 .next-title .dot { position: relative; top: -1px; }
+.next-title span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .next-sub { font-size: 14px; color: var(--text2); margin-top: 2px; }
 .next-sub.late { color: var(--red); font-weight: 600; }
 .next-sum { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 4px; }
@@ -201,6 +202,11 @@ body.sub #app { padding-bottom: calc(32px + env(safe-area-inset-bottom)); }
 .chip.ghost { background: var(--fill); color: var(--accent); }
 .chip svg { width: 18px; height: 18px; }
 .chip:active { opacity: .75; }
+/* на узком экране у «Ближайшего платежа» кнопка — только галочка, чтобы влезло название */
+@media (max-width: 400px) {
+  .next .chip { padding: 10px; }
+  .next .chip span { display: none; }
+}
 
 /* ---------- плитки долгов ---------- */
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -376,11 +382,14 @@ textarea { display: block; width: 100%; min-height: 88px; padding: 12px 16px; bo
   position: fixed; left: 50%; bottom: calc(92px + env(safe-area-inset-bottom)); z-index: 20;
   max-width: calc(100% - 32px); padding: 10px 16px; border-radius: 999px;
   background: var(--pop-bg); color: var(--pop-fg); font-size: 14px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  display: flex; align-items: center; gap: 14px; white-space: nowrap;
   opacity: 0; transform: translate(-50%, 16px); pointer-events: none;
   transition: opacity .25s ease, transform .25s ease;
 }
+#toast span { overflow: hidden; text-overflow: ellipsis; }
+#toast button { flex: none; color: #4DA2FF; font-weight: 600; font-size: 14px; padding: 4px 0; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
+#toast.show.has-action { pointer-events: auto; }
 
 /* ---------- демо и подтверждение ---------- */
 .demo {

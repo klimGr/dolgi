@@ -60,6 +60,14 @@ const parseNum = v => {
   const n = parseFloat(s);
   return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : null;
 };
+// «412000» → «412 000» для полей ввода; parseNum понимает такую запись
+function groupNum(v) {
+  const s = String(v ?? '').replace(/[^\d.,]/g, '').replace(/\./g, ',');
+  const i = s.indexOf(',');
+  const int = (i < 0 ? s : s.slice(0, i)).replace(/^0+(?=\d)/, '');
+  const frac = i < 0 ? '' : ',' + s.slice(i + 1).replace(/,/g, '').slice(0, 2);
+  return int.replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0') + frac;
+}
 const pad = n => String(n).padStart(2, '0');
 const localDate = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const todayKey = () => localDate(new Date());
@@ -234,11 +242,17 @@ const today = () => todayKey();
 let denied = null;
 
 async function api(body) {
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...body, initData: tg.initData }),
-  });
+  let res;
+  try {
+    res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, initData: tg.initData }),
+      signal: AbortSignal.timeout?.(20000),
+    });
+  } catch {
+    throw new Error('Нет связи с сервером');
+  }
   const json = await res.json().catch(() => ({}));
   if (res.status === 403) {
     denied = json.id || tg?.initDataUnsafe?.user?.id || '?';
@@ -254,45 +268,72 @@ function applyState(s) {
   saveLocal();
 }
 
+// Перерисовать после ответа сервера, но не сбивать открытую форму
+function refresh() {
+  const top = state.stack[state.stack.length - 1];
+  if (!top || !['edit', 'op'].includes(top.type)) render();
+}
+
+let pending = 0;      // сколько изменений ещё едет на сервер
+let queue = Promise.resolve();
+let resync = false;   // сервер что-то не принял — после очереди перечитать всё
+
 async function pull() {
-  if (!remote) return;
+  if (!remote || pending) return;
   try {
-    applyState(await api({ action: 'state' }));
-    const top = state.stack[state.stack.length - 1];
-    if (!top || !['edit', 'op'].includes(top.type)) render();
+    const s = await api({ action: 'state' });
+    if (pending) return; // пока ждали, появились свежие изменения — их ответ новее
+    applyState(s);
+    refresh();
   } catch (e) {
     if (!denied) toast(e.message);
   }
 }
 
-/** Изменение: на сервере в общем режиме, локально — в демо */
-async function mutate(op, local) {
-  if (!remote) {
-    local();
-    saveLocal();
-    return true;
-  }
-  try {
-    applyState(await api(op));
-    return true;
-  } catch (e) {
-    if (!denied) toast(e.message);
-    return false;
-  }
+/** Изменение показываем сразу, а на сервер отправляем по очереди в фоне */
+function mutate(op, local) {
+  local();
+  saveLocal();
+  if (!remote) return true;
+  pending++;
+  queue = queue.then(async () => {
+    try {
+      const s = await api(op);
+      if (pending === 1 && !resync) {
+        applyState(s);
+        refresh();
+      }
+    } catch (e) {
+      resync = true;
+      if (!denied) toast(e.message);
+    } finally {
+      pending--;
+      if (!pending && resync) {
+        resync = false;
+        pull();
+      }
+    }
+  });
+  return true;
 }
 
 let toastTimer;
-function toast(text) {
+/** Короткое сообщение внизу; action — кнопка вроде «Отменить»: { label, run } */
+function toast(text, action) {
   let el = document.getElementById('toast');
   if (!el) {
     el = document.createElement('div');
     el.id = 'toast';
+    el.setAttribute('role', 'status');
     document.body.append(el);
   }
-  el.textContent = text;
+  const hide = () => el.classList.remove('show');
+  el.innerHTML = `<span>${esc(text)}</span>${action ? `<button type="button">${esc(action.label)}</button>` : ''}`;
+  if (action) el.querySelector('button').onclick = () => { hide(); action.run(); };
+  el.classList.toggle('has-action', !!action);
   el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
+  toastTimer = setTimeout(hide, action ? 5000 : 3000);
 }
 
 /* ---------- навигация ---------- */
@@ -407,7 +448,7 @@ const infoRow = (label, value) => `<div class="row"><div class="row-label">${lab
 const field = (label, control, cls = '') =>
   `<label class="field ${cls}"><span class="field-label">${label}</span><span class="field-control">${control}</span></label>`;
 const moneyField = (label, name, value, placeholder = '0', extra = '') =>
-  field(label, `<input name="${name}" inputmode="decimal" placeholder="${placeholder}" value="${value ?? ''}" ${extra}><em>₽</em>`, 'num');
+  field(label, `<input name="${name}" inputmode="decimal" placeholder="${placeholder}" value="${groupNum(value)}" ${extra}><em>₽</em>`, 'num');
 // Вне Telegram — демо: честно говорим, что данные примерные
 const demoBanner = () => (remote ? '' : `
   <div class="demo" role="note">
@@ -511,7 +552,7 @@ function nextCard(list) {
         <div class="next-sub ${i.cls === 'late' ? 'late' : ''}">${i.when}</div>
         <div class="next-sum">${money(i.amount)}</div>
       </div>
-      <button class="chip" data-go="op" data-kind="payment" data-id="${d.id}" data-due="1">${ICON.check}Оплачено</button>
+      <button class="chip" data-go="op" data-kind="payment" data-id="${d.id}" data-due="1" aria-label="Оплачено">${ICON.check}<span>Оплачено</span></button>
     </div>`;
 }
 
@@ -718,7 +759,7 @@ function renderDebt({ id }) {
           <div class="next-sum" style="margin:0">${money(i.amount)}</div>
           <div class="next-sub ${i.cls === 'late' ? 'late' : ''}">${i.when}</div>
         </div>
-        <button class="chip" data-go="op" data-kind="payment" data-id="${d.id}" data-due="1">${ICON.check}Оплачено</button>
+        <button class="chip" data-go="op" data-kind="payment" data-id="${d.id}" data-due="1" aria-label="Оплачено">${ICON.check}<span>Оплачено</span></button>
       </div>` : ''}
 
     <h2 class="section-title">Условия</h2>
@@ -784,7 +825,7 @@ function renderEdit({ id }) {
       <div class="list">
         ${moneyField('Платёж в месяц', 'minPayment', d?.minPayment, 'минимальный')}
         ${field('Ближайший', `<input name="nextPayment" type="date" value="${esc(next || '')}">`)}
-        ${field('Ставка', `<input name="rate" inputmode="decimal" placeholder="0" value="${d?.rate ?? ''}"><em>%</em>`, 'num')}
+        ${field('Ставка', `<input name="rate" inputmode="decimal" placeholder="0" value="${groupNum(d?.rate)}"><em>%</em>`, 'num')}
         ${field('Окончание', `<input name="endDate" type="date" value="${esc(d?.endDate || '')}">`)}
       </div>
       <p class="form-hint">По дате ближайшего платежа бот поймёт число месяца и будет напоминать за 3 дня, накануне и в день оплаты. Ставка — % годовых.</p>
@@ -820,7 +861,7 @@ function renderOp({ id, kind }) {
       ${navBar(op.title, '<button class="nav-link strong" type="submit">Готово</button>')}
       <div class="op-amount">
         <div class="caption"><span class="dot c${d.color}"></span> ${esc(d.name)}</div>
-        <input name="amount" inputmode="decimal" placeholder="0 ₽" value="${value ? Math.round(value * 100) / 100 : ''}" required aria-label="${op.label}">
+        <input name="amount" inputmode="decimal" placeholder="0 ₽" value="${value ? groupNum(round2(value)) : ''}" required aria-label="${op.label}">
         <div class="caption">${op.label}${kind !== 'balance' ? ` · сейчас ${money(d.balance)}` : ''}</div>
       </div>
       ${quick.length ? `<div class="quick">${quick.map(([l, v]) => `<button type="button" class="chip ghost" data-action="quick" data-id="${v}">${l} · ${money(v)}</button>`).join('')}</div>` : ''}
@@ -844,9 +885,8 @@ function renderDenied() {
 const SCREENS = { debt: renderDebt, edit: renderEdit, op: renderOp };
 
 /* ---------- сохранение ---------- */
-let saving = false;
 
-async function saveEdit(form) {
+function saveEdit(form) {
   const fd = new FormData(form);
   const id = form.dataset.id;
   const input = {
@@ -866,8 +906,9 @@ async function saveEdit(form) {
   };
   if (!input.name) return toast('Введите название');
   // payDay: null — убрать график, если дату ближайшего платежа стёрли
-  const payload = { ...input, id: id || undefined, payDay: input.nextPayment ? undefined : null };
-  const ok = await mutate({ action: 'save_debt', debt: payload }, () => {
+  const debtId = id || uid(), eventId = uid();
+  const payload = { ...input, id: debtId, payDay: input.nextPayment ? undefined : null };
+  const ok = mutate({ action: 'save_debt', create: !id, eventId, debt: payload }, () => {
     const t = today();
     if (id) {
       const d = findDebt(id);
@@ -876,10 +917,10 @@ async function saveEdit(form) {
       if (input.start !== null) d.start = input.start;
       if (input.nextPayment && input.nextPayment !== prevNext) setSchedule(d, t, null, input.nextPayment);
       if (!input.nextPayment) setSchedule(d, t, null, null);
-      if (input.balance !== d.balance) data.events.push(applyBalance(d, input.balance, t, meName(), 'Остаток изменён вручную'));
+      if (input.balance !== d.balance) data.events.push({ ...applyBalance(d, input.balance, t, meName(), 'Остаток изменён вручную'), id: eventId });
       d.start = Math.max(d.start, d.balance);
     } else {
-      const d = { id: uid(), ...input, start: Math.max(input.start ?? 0, input.balance), payDay: null, paidDue: null, files: [], closed: false, createdAt: new Date().toISOString() };
+      const d = { id: debtId, ...input, start: Math.max(input.start ?? 0, input.balance), payDay: null, paidDue: null, files: [], closed: false, createdAt: new Date().toISOString() };
       delete d.nextPayment;
       setSchedule(d, t, null, input.nextPayment);
       data.debts.push(d);
@@ -891,28 +932,52 @@ async function saveEdit(form) {
   }
 }
 
-async function saveOp(form) {
+function saveOp(form) {
   const fd = new FormData(form);
   const { id, kind } = form.dataset;
   const amount = parseNum(fd.get('amount'));
   if (amount === null || (kind !== 'balance' && amount <= 0)) return toast('Введите сумму');
   const date = fd.get('date') || today();
   const note = String(fd.get('note') || '').trim();
-  const ok = await mutate({ action: kind === 'payment' ? 'pay' : kind, debtId: id, amount, date, note }, () => {
+  const d0 = findDebt(id);
+  // Лишний ноль — частая опечатка: платёж больше долга сначала переспрашиваем
+  if (kind === 'payment' && d0 && amount > d0.balance + 0.5 && !form.dataset.over) {
+    return confirmAsk(`Это больше всего долга (${money(d0.balance)}). Записать и считать долг погашенным?`, ok => {
+      if (!ok) return;
+      form.dataset.over = '1';
+      saveOp(form);
+    }, 'Записать');
+  }
+  const eventId = uid();
+  const ok = mutate({ action: kind === 'payment' ? 'pay' : kind, debtId: id, amount, date, note, eventId }, () => {
     const d = findDebt(id);
     const e = kind === 'payment'
       ? applyPayment(d, data.events, amount, date, meName(), note, today())
       : kind === 'charge'
         ? Object.assign(applyBalance(d, d.balance + amount, date, meName(), note, 'charge'), { amount })
         : applyBalance(d, amount, date, meName(), note);
-    data.events.push(e);
+    data.events.push({ ...e, id: eventId });
   });
   if (ok) {
     haptic('success');
     const d = findDebt(id);
-    if (d && kind === 'payment' && d.balance === 0) toast('Долг погашен! 🎉');
+    const undo = { label: 'Отменить', run: () => deleteEvent(eventId) };
+    if (d && kind === 'payment' && d.balance === 0) toast('Долг погашен! 🎉', undo);
+    else toast({ payment: `Платёж ${money(amount)} записан`, balance: 'Остаток обновлён', charge: `Долг вырос на ${money(amount)}` }[kind], undo);
     back();
   }
+}
+
+function deleteEvent(id) {
+  const e = data.events.find(x => x.id === id);
+  if (!e) return;
+  mutate({ action: 'delete_event', id }, () => {
+    const d = findDebt(e.debtId);
+    if (d) revertEvent(d, e);
+    data.events = data.events.filter(x => x.id !== id);
+  });
+  tick();
+  render();
 }
 
 async function handleAction(action, id, el) {
@@ -941,7 +1006,7 @@ async function handleAction(action, id, el) {
   }
   if (action === 'quick') {
     const input = app.querySelector('input[name="amount"]');
-    if (input) input.value = id;
+    if (input) input.value = groupNum(id);
     return tick();
   }
   if (action === 'file') {
@@ -958,21 +1023,13 @@ async function handleAction(action, id, el) {
     const e = data.events.find(x => x.id === id);
     if (!e) return;
     const what = e.type === 'payment' ? `платёж ${money(e.amount)}` : 'эту запись';
-    return confirmAsk(`Удалить ${what} от ${dayMonth(e.date)}? Остаток долга вернётся как было.`, async ok => {
-      if (!ok) return;
-      const done = await mutate({ action: 'delete_event', id }, () => {
-        const d = findDebt(e.debtId);
-        if (d) revertEvent(d, e);
-        data.events = data.events.filter(x => x.id !== id);
-      });
-      if (done) render();
-    });
+    return confirmAsk(`Удалить ${what} от ${dayMonth(e.date)}? Остаток долга вернётся как было.`, ok => ok && deleteEvent(id));
   }
   if (action === 'delete') {
     const d = findDebt(id);
-    return confirmAsk(`Удалить «${d?.name}» вместе с историей платежей?`, async ok => {
+    return confirmAsk(`Удалить «${d?.name}» вместе с историей платежей?`, ok => {
       if (!ok) return;
-      const done = await mutate({ action: 'delete_debt', id }, () => {
+      const done = mutate({ action: 'delete_debt', id }, () => {
         data.debts = data.debts.filter(x => x.id !== id);
         data.events = data.events.filter(x => x.debtId !== id);
       });
@@ -1001,19 +1058,25 @@ document.addEventListener('click', e => {
   }
 });
 
-document.addEventListener('submit', async e => {
+document.addEventListener('submit', e => {
   e.preventDefault();
-  if (saving) return;
   const form = e.target;
-  saving = true;
-  for (const b of form.querySelectorAll('button[type="submit"]')) b.disabled = true;
-  try {
-    if (form.dataset.form === 'edit') await saveEdit(form);
-    if (form.dataset.form === 'op') await saveOp(form);
-  } finally {
-    saving = false;
-    for (const b of form.querySelectorAll('button[type="submit"]')) b.disabled = false;
-  }
+  if (form.dataset.form === 'edit') saveEdit(form);
+  if (form.dataset.form === 'op') saveOp(form);
+});
+
+// Суммы разбиваем на разряды прямо при вводе, курсор остаётся у той же цифры
+document.addEventListener('input', e => {
+  const el = e.target;
+  if (!(el instanceof HTMLInputElement) || el.inputMode !== 'decimal') return;
+  const pos = el.selectionStart ?? el.value.length;
+  const before = el.value.slice(0, pos).replace(/[^\d.,]/g, '').length;
+  const next = groupNum(el.value);
+  if (next === el.value) return;
+  el.value = next;
+  let i = 0;
+  for (let n = 0; i < next.length && n < before; i++) if (/[\d,]/.test(next[i])) n++;
+  el.setSelectionRange(i, i);
 });
 
 // Подсказка над полоской: название и сумма
