@@ -1,0 +1,4 @@
+.DS_Store
+/delo/
+.env
+supabase/.temp/

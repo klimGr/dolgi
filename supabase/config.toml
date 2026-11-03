@@ -1,0 +1,4 @@
+# Функция «debts» принимает запросы от Telegram и мини-приложения без JWT Supabase:
+# вебхук проверяется секретным заголовком, приложение — подписью initData.
+[functions.debts]
+verify_jwt = false
