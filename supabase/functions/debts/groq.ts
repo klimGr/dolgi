@@ -37,20 +37,41 @@ function errorFor(status: number, body: string): AiError {
   return new AiError('bad', body);
 }
 
+/** Сколько секунд просит подождать Groq при 429: «try again in 6.06s» или «in 1m2.5s» */
+export function retryAfter(body: string): number | null {
+  const m = body.match(/try again in (?:(\d+)m)?(\d+(?:\.\d+)?)s/i);
+  return m ? Number(m[1] ?? 0) * 60 + Number(m[2]) : null;
+}
+
+// Бесплатный тариф считает токены в минуту: несколько фото подряд упираются в лимит на несколько секунд.
+// Короткую паузу ждём сами, долгую (суточный лимит) — отдаём наверх
+const MAX_WAIT = 25;
+export let sleep = (s: number) => new Promise(r => setTimeout(r, s * 1000));
+export const setSleep = (f: typeof sleep) => void (sleep = f);
+
 async function groq<T>(path: string, body?: unknown): Promise<T> {
-  let res: Response;
-  try {
-    res = await fetch(`${API}${path}`, {
-      method: body ? 'POST' : 'GET',
-      headers: { Authorization: `Bearer ${GROQ_API_KEY()}`, 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(120_000),
-    });
-  } catch (e) {
-    throw new AiError('down', String(e));
+  for (let attempt = 0; ; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(`${API}${path}`, {
+        method: body ? 'POST' : 'GET',
+        headers: { Authorization: `Bearer ${GROQ_API_KEY()}`, 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(120_000),
+      });
+    } catch (e) {
+      throw new AiError('down', String(e));
+    }
+    if (res.ok) return await res.json();
+    const text = await res.text();
+    const wait = res.status === 429 ? retryAfter(text) : null;
+    if (wait !== null && wait <= MAX_WAIT && attempt < 4) {
+      console.log('groq rate, wait', wait);
+      await sleep(wait + 0.5);
+      continue;
+    }
+    throw errorFor(res.status, text);
   }
-  if (!res.ok) throw errorFor(res.status, await res.text());
-  return await res.json();
 }
 
 /* ---------- выбор модели ---------- */

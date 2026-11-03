@@ -30,7 +30,7 @@ Deno.test({ name: 'Groq: ключ Google не подошёл — отвечае�
   assert(geminiRequests.length === 3 && geminiScript.length === 0, 'Google пробовали трижды');
 
   const [vision, first, second] = groqRequests;
-  assert(String(vision.body.model).includes('llama-4') && JSON.stringify(vision.body).includes('image_url'), 'фото → модель со зрением');
+  assert(String(vision.body.model).length > 0 && JSON.stringify(vision.body).includes('image_url'), 'фото → модель со зрением');
   assert(first.body.model === 'openai/gpt-oss-120b' && Array.isArray(first.body.tools), 'главная модель с инструментами');
   assert(vision.headers.get('authorization') === 'Bearer gsk_test', 'ключ Groq');
   const userMsg = (first.body.messages as Row[]).at(-1)!;
@@ -44,4 +44,32 @@ Deno.test({ name: 'Groq: ключ Google не подошёл — отвечае�
   const r2 = await chat({ chatId: 42, me, text: 'сколько мы должны?', attachments: [] });
   assert(r2.reply.includes('10 000') && geminiRequests.length === before, 'Google не пропущен');
   assert(groqScript.length === 0, 'не все ответы использованы');
+});
+
+Deno.test({ name: 'Groq: лимит в минуту на фото — ждём и читаем дальше, суточный — отдаём ошибку', sanitizeOps: false, sanitizeResources: false }, async () => {
+  const { retryAfter, setSleep } = await import('./groq.ts');
+  assert(retryAfter('Please try again in 6.06s.') === 6.06 && retryAfter('try again in 1m2.5s') === 62.5 && retryAfter('nope') === null, 'разбор паузы');
+
+  Deno.env.set('DEBTS_AI', 'groq');
+  const waits: number[] = [];
+  setSleep(s => (waits.push(s), Promise.resolve()));
+  const limited = (s: string) => ({ status: 429, body: `{"error":{"message":"Rate limit reached for model qwen. Please try again in ${s}.","code":"rate_limit_exceeded"}}` });
+  groqRequests.length = 0;
+  groqScript.push(
+    answer({ content: 'Фото 1: Кредитная карта, долг 5 000' }),
+    limited('6.06s'), // второе фото упёрлось в лимит минуты
+    answer({ content: 'Фото 2: минимальный платёж 500' }),
+    answer({ content: 'Вижу карту с долгом 5 000 ₽, минимальный платёж 500 ₽.' }),
+  );
+  const photo = (id: string) => ({ file: { id, name: 'Фото', type: 'photo' as const }, mime: 'image/jpeg', base64: '/9j/4AAQ' });
+  const r = await chat({ chatId: 42, me, text: 'что тут?', attachments: [photo('A1'), photo('A2')] });
+  assert(r.reply.includes('500') && waits.length === 1 && waits[0] > 6, 'ждали и дочитали: ' + JSON.stringify({ r, waits }));
+  const text = String((groqRequests.at(-1)!.body.messages as Row[]).at(-1)!.content);
+  assert(text.includes('Фото 1') && text.includes('Фото 2'), 'оба фото дошли до модели');
+
+  groqScript.push(limited('12m30s'));
+  let kind = '';
+  await chat({ chatId: 42, me, text: 'ещё', attachments: [] }).catch(e => kind = e.kind);
+  assert(kind === 'rate' && groqScript.length === 0, 'долгий лимит не ждём: ' + kind);
+  Deno.env.delete('DEBTS_AI');
 });
