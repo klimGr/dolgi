@@ -76,7 +76,7 @@ https://fpyxaygiiiivnjrujqyf.supabase.co/functions/v1/debts/setup?key=ваш-с�
 ## Если что-то не работает
 
 - **Бот молчит** — откройте `/setup?key=…` ещё раз и проверьте логи функции в Supabase (Edge Functions → debts → Logs).
-- **«Нет доступа» в приложении** — ID не добавлен в `DEBTS_ALLOWED_IDS`. Приложение покажет ваш ID — добавьте его в секрет.
+- **«Нет доступа» в приложении** — ID не добавлен в `DEBTS_ALLOWED_IDS`. Приложение покажет ваш ID — добавьте его в секрет или, не трогая секреты, в базу: `insert into debt_settings (key, value) values ('allowed_ids', '123') on conflict (key) do update set value = debt_settings.value || ',' || excluded.value;`
 - **«ИИ пока не подключён» или «Ключ ИИ не подошёл»** — проверьте `GEMINI_API_KEY`. Сводка `/summary`, `/next`, напоминания и приложение работают и без него.
 - **«Бесплатный лимит ИИ закончился»** — у бесплатного тарифа Google есть лимит запросов в минуту и в день; подождите минуту или до завтра.
 

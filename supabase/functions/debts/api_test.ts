@@ -62,3 +62,17 @@ Deno.test({ name: 'служебный ключ: секрет или cron_key и�
   assert(!(await isServiceKey(null, '')), 'пустой ключ принят');
   assert(!(await isServiceKey('', '')), 'пустой секрет принят');
 });
+
+Deno.test({ name: 'доступ: ID из debt_settings.allowed_ids — без смены секрета', sanitizeOps: false, sanitizeResources: false }, async () => {
+  const { loadAllowed } = await import('./db.ts');
+  const { isAllowed } = await import('./config.ts');
+  tables.debt_settings = [{ key: 'allowed_ids', value: '77, 78' }];
+  await loadAllowed(true);
+  assert(isAllowed(42) && isAllowed('77') && isAllowed(78), 'секрет + база');
+  const r = await handleApi({ initData: await initData(77, 'Лера'), action: 'state' });
+  assert(r.status === 200, 'ID из базы пустили: ' + r.status);
+  assert(!isAllowed(99), 'чужой не прошёл');
+  tables.debt_settings = [];
+  await loadAllowed(true);
+  assert(!isAllowed(77) && isAllowed(42), 'убрали из базы — доступа нет, секрет остался');
+});

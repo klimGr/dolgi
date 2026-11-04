@@ -17,7 +17,7 @@ function stageFor(days: number) {
 
 export async function runReminders() {
   const t = today(TZ);
-  const [debts, members] = await Promise.all([db.debts(), db.members()]);
+  const [debts, members] = await Promise.all([db.debts(), db.members(), db.loadAllowed()]);
   const chats = members.filter(m => m.chatId && isAllowed(m.id));
   const sent: string[] = [];
 

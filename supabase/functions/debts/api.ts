@@ -15,6 +15,7 @@ type Body = Record<string, unknown> & { initData?: string; action?: string };
 export async function handleApi(body: Body): Promise<{ status: number; data: unknown }> {
   const user = await verifyInitData(String(body.initData || ''));
   if (!user) return { status: 401, data: { error: 'Не удалось проверить вход через Telegram' } };
+  await db.loadAllowed();
   if (!isAllowed(user.id)) return { status: 403, data: { error: 'Нет доступа', id: user.id } };
   const by = userName(user);
   // Запоминаем участника параллельно с операцией: на ответ это время не тратим

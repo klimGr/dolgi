@@ -25,6 +25,7 @@ export const appButton = (text = '📊 Открыть приложение'): Ke
   APP_URL ? { inline_keyboard: [[{ text, web_app: { url: APP_URL } }]] } : undefined;
 
 export async function handleUpdate(u: TgUpdate) {
+  await db.loadAllowed();
   if (u.callback_query) return onCallback(u.callback_query);
   const m = u.message;
   if (!m?.from) return;
@@ -33,7 +34,7 @@ export async function handleUpdate(u: TgUpdate) {
     return;
   }
   if (!isAllowed(m.from.id)) {
-    await sendText(m.chat.id, `Это личный бот для учёта долгов.\n\nВаш Telegram ID: <code>${m.from.id}</code> — чтобы получить доступ, его нужно добавить в настройку DEBTS_ALLOWED_IDS.`);
+    await sendText(m.chat.id, `Это личный бот для учёта долгов.\n\nВаш Telegram ID: <code>${m.from.id}</code> — чтобы получить доступ, его нужно добавить в список доступа.`);
     return;
   }
   await db.touchMember(m.from.id, userName(m.from), m.chat.id);

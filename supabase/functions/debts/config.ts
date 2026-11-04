@@ -4,8 +4,14 @@ const env = (k: string, fallback = '') => Deno.env.get(k) ?? fallback;
 export const BOT_TOKEN = env('DEBTS_BOT_TOKEN');
 // Общий секрет: заголовок вебхука Telegram, ключ для cron и для /setup
 export const SECRET = env('DEBTS_SECRET');
-// Telegram ID тех, кому можно пользоваться ботом: «123,456»
-export const ALLOWED = new Set(env('DEBTS_ALLOWED_IDS').split(/[\s,;]+/).filter(Boolean));
+// Telegram ID тех, кому можно пользоваться ботом: «123,456» из секрета
+// плюс allowed_ids из таблицы debt_settings — их подгружает db.loadAllowed()
+const BASE_ALLOWED = env('DEBTS_ALLOWED_IDS').split(/[\s,;]+/).filter(Boolean);
+export const ALLOWED = new Set(BASE_ALLOWED);
+export function setExtraAllowed(ids: string[]) {
+  ALLOWED.clear();
+  for (const id of [...BASE_ALLOWED, ...ids]) ALLOWED.add(id);
+}
 // Адрес мини-приложения, например https://klimgr.github.io/dolgi/
 export const APP_URL = env('DEBTS_APP_URL');
 export const TZ = env('DEBTS_TZ', 'Europe/Moscow');

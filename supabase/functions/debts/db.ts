@@ -1,6 +1,6 @@
 // Хранилище: таблицы Postgres через supabase-js под сервисным ключом
 import { createClient } from 'npm:@supabase/supabase-js@2.118.0';
-import { SERVICE_KEY, SUPABASE_URL } from './config.ts';
+import { SERVICE_KEY, setExtraAllowed, SUPABASE_URL } from './config.ts';
 import type { Debt, DebtEvent, DebtFile, Kind } from './logic.ts';
 
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
@@ -141,6 +141,21 @@ export async function claimReminder(debtId: string, due: string, stage: string) 
     .upsert({ debt_id: debtId, due, stage }, { onConflict: 'debt_id,due,stage', ignoreDuplicates: true })
     .select()) as unknown[];
   return rows.length > 0;
+}
+
+/* ---------- доступ ---------- */
+let allowedAt = 0;
+/** Дополнительные Telegram ID из debt_settings.allowed_ids — так человека можно добавить без смены секрета.
+ *  Читаем не чаще раза в минуту; если база не ответила, работаем со списком из секрета */
+export async function loadAllowed(force = false) {
+  if (!force && Date.now() - allowedAt < 60_000) return;
+  try {
+    const row = ok(await sb.from('debt_settings').select('value').eq('key', 'allowed_ids').maybeSingle()) as { value?: string } | null;
+    setExtraAllowed(String(row?.value ?? '').split(/[\s,;]+/).filter(Boolean));
+    allowedAt = Date.now();
+  } catch (e) {
+    console.error('allowed_ids', e);
+  }
 }
 
 /* ---------- служебный ключ ---------- */
