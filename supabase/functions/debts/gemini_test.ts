@@ -117,3 +117,30 @@ Deno.test({ name: 'Gemini: ключ Vertex AI (AQ.) — подбор спосо�
   assert(q[4].url.includes('/gemini-flash-latest:') && q[4].headers.get('x-goog-api-key') && !q[4].url.includes('?key='), 'ответ идёт найденным способом');
   assert(geminiScript.length === 0, 'не все ответы использованы');
 });
+
+Deno.test({ name: 'Gemini: у модели кончился лимит — берём следующую, а не «файл слишком большой»', sanitizeOps: false, sanitizeResources: false }, async () => {
+  const { forgetChoice } = await import('./gemini.ts');
+  forgetChoice();
+  Deno.env.set('GEMINI_API_KEY', 'gemini-test-key');
+  Deno.env.delete('DEBTS_GEMINI_MODEL');
+  Deno.env.delete('DEBTS_AI');
+  Deno.env.delete('GROQ_API_KEY');
+  Deno.env.delete('ANTHROPIC_API_KEY');
+  const quota = { status: 429, body: '{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"You exceeded your current quota"}}' };
+  const gone = { status: 404, body: '{"error":{"status":"NOT_FOUND","message":"This model is no longer available to new users"}}' };
+
+  // 1. Выбранная модель отвечает 429 посреди дня → пробуем следующую и отвечаем ею
+  geminiRequests.length = 0;
+  geminiScript.push(reply([{ text: 'ок' }]), quota, reply([{ text: 'ок' }]), reply([{ text: 'Готово!' }]));
+  const r = await chat({ chatId: 45, me, text: 'привет', attachments: [] });
+  assert(r.reply === 'Готово!', 'ответ: ' + r.reply);
+  const urls = geminiRequests.map(x => x.url.match(/models\/([^:]+):/)![1]);
+  assert(JSON.stringify(urls) === JSON.stringify(['gemini-3-flash-preview', 'gemini-3-flash-preview', 'gemini-flash-latest', 'gemini-flash-latest']), 'модели: ' + urls);
+
+  // 2. Никто не ответил: лимит, перегрузка и «модели нет» → ошибка «лимит» (на неё бот переключается на Groq), а не «bad»
+  forgetChoice();
+  geminiScript.push(quota, { status: 503, body: '{"error":{"status":"UNAVAILABLE"}}' }, gone, gone);
+  const e = await chat({ chatId: 45, me, text: 'привет', attachments: [] }).catch(x => x);
+  assert(e instanceof AiError && e.kind === 'rate', 'ошибка: ' + e);
+  assert(geminiScript.length === 0, 'не все ответы использованы');
+});

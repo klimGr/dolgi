@@ -42,6 +42,8 @@ const ICON = {
   chat: svg('<path d="M4 5h16v11H9l-5 4z"/>'),
   doc: svg('<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 13h6M9 17h6"/>'),
   bell: svg('<path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0"/>'),
+  phone: svg('<rect x="6" y="2.5" width="12" height="19" rx="3"/><path d="M11 18.5h2"/>'),
+  offline: svg('<path d="M2 8.8a15 15 0 0 1 4.2-2.6M9.5 5.2A15 15 0 0 1 22 8.8M5 12.4a10 10 0 0 1 4.4-2.2M14.6 10.4A10 10 0 0 1 19 12.4M8.5 16a5 5 0 0 1 7 0M12 20h.01M3 3l18 18"/>'),
   bulb: svg('<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.6.6 1 1.4 1 2.5h6c0-1.1.4-1.9 1-2.5A6 6 0 0 0 12 3z"/>'),
 };
 
@@ -245,6 +247,7 @@ const today = () => todayKey();
 
 /* ---------- сервер ---------- */
 let denied = null;
+let offline = false;   // последний запрос не дошёл: показываем сохранённые данные с пометкой
 
 async function api(body) {
   let res;
@@ -256,8 +259,9 @@ async function api(body) {
       signal: AbortSignal.timeout?.(20000),
     });
   } catch {
-    throw new Error('Нет связи с сервером');
+    throw Object.assign(new Error('Нет связи с сервером'), { offline: true });
   }
+  offline = false;
   const json = await res.json().catch(() => ({}));
   if (res.status === 403) {
     denied = json.id || tg?.initDataUnsafe?.user?.id || '?';
@@ -268,7 +272,7 @@ async function api(body) {
 }
 
 function applyState(s) {
-  data = { debts: s.debts || [], events: s.events || [], members: s.members || [], me: s.me || null, bot: s.bot || '' };
+  data = { debts: s.debts || [], events: s.events || [], members: s.members || [], me: s.me || null, bot: s.bot || '', savedAt: Date.now() };
   loaded = true;
   saveLocal();
 }
@@ -291,12 +295,21 @@ async function pull() {
     applyState(s);
     refresh();
   } catch (e) {
-    if (!denied) toast(e.message);
+    if (e.offline) {
+      offline = true;
+      refresh();
+    } else if (!denied) toast(e.message);
   }
 }
 
 /** Изменение показываем сразу, а на сервер отправляем по очереди в фоне */
 function mutate(op, local) {
+  // Без сети изменение не дойдёт до сервера и пропадёт при следующей загрузке — честно не даём его сделать
+  if (remote && (offline || navigator.onLine === false)) {
+    toast('Нет интернета — изменения сейчас не сохранить');
+    pull();
+    return false;
+  }
   local();
   saveLocal();
   if (!remote) return true;
@@ -310,7 +323,8 @@ function mutate(op, local) {
       }
     } catch (e) {
       resync = true;
-      if (!denied) toast(e.message);
+      if (e.offline) offline = true;
+      if (!denied) toast(e.offline ? 'Нет интернета — изменение не сохранилось' : e.message);
     } finally {
       pending--;
       if (!pending && resync) {
@@ -372,8 +386,9 @@ function render(scrollTop, anim) {
   tip.hidden = true;
   const top = state.stack[state.stack.length - 1];
   if (denied) app.innerHTML = renderDenied();
+  else if (!loaded && offline) app.innerHTML = emptyState('Нет интернета', 'Данные ещё ни разу не загружались на этом устройстве. Подключитесь к сети — и всё появится.');
   else if (!loaded) app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
-  else app.innerHTML = top ? SCREENS[top.type](top) : TABS[state.tab]();
+  else app.innerHTML = top ? SCREENS[top.type](top) : offlineLine() + TABS[state.tab]();
   document.body.classList.toggle('sub', !!top);
   tabbar.hidden = !!top || !!denied;
   tabbar.innerHTML = renderTabbar();
@@ -468,6 +483,12 @@ const demoBanner = () => (remote ? '' : `
     <span>Демо с примером данных. Изменения видны только в этом браузере.</span>
     <button class="link" data-action="reset-demo">Сбросить</button>
   </div>`);
+const offlineLine = () => {
+  if (!offline) return '';
+  const t = data.savedAt ? new Date(data.savedAt) : null;
+  const when = t ? ` · данные на ${t.getDate()} ${MONTHS_GEN[t.getMonth()]}, ${t.toTimeString().slice(0, 5)}` : '';
+  return `<div class="offline">${ICON.offline}<span>Нет интернета${when}</span></div>`;
+};
 const emptyState = (title, text) => `<div class="empty"><div class="empty-title">${title}</div><p>${text}</p></div>`;
 
 // Фильтр «чей долг»; если такого владельца больше нет — показываем всех
@@ -781,7 +802,32 @@ function renderTips() {
             <button data-go="${r.go || 'debt'}" data-id="${r.d.id}"><span class="dot c${r.d.color}"></span><span class="n">${esc(r.d.name)}</span><span class="v">${esc(r.value)}</span></button>`).join('')}</div>` : ''}
           ${x.ask ? ask : ''}
         </div>
-      </div>`).join('') : emptyState('Всё спокойно', 'Здесь появятся ближайшие платежи, превышения лимита и другие вещи, которые стоит знать.')}`;
+      </div>`).join('') : emptyState('Всё спокойно', 'Здесь появятся ближайшие платежи, превышения лимита и другие вещи, которые стоит знать.')}
+    ${homeCard()}`;
+}
+
+/* ---------- иконка на экране телефона ---------- */
+let homeStatus = null; // missing | added | unknown | unsupported — так отвечает Telegram
+function homeCard() {
+  if (!['missing', 'unknown'].includes(homeStatus)) return '';
+  return `
+    <div class="card insight">
+      <div class="ico">${ICON.phone}</div>
+      <div class="insight-main">
+        <div class="insight-title">Иконка на экране телефона</div>
+        <p>«Наши долги» будут открываться одним нажатием, как обычное приложение, — без поиска чата с ботом.</p>
+        <button class="chip ghost" data-action="home-screen">${ICON.plus}Добавить на экран</button>
+      </div>
+    </div>`;
+}
+function checkHome() {
+  if (!tgVersion('8.0') || !tg.checkHomeScreenStatus) return;
+  try {
+    tg.checkHomeScreenStatus(s => {
+      homeStatus = s;
+      if (state.tab === 'tips') refresh();
+    });
+  } catch { /* старый клиент */ }
 }
 
 const TABS = { home: renderHome, payments: renderPayments, tips: renderTips };
@@ -1069,6 +1115,10 @@ async function handleAction(action, id, el) {
     tick();
     return render();
   }
+  if (action === 'home-screen') {
+    try { tg.addToHomeScreen(); } catch { toast('Эта версия Telegram не умеет добавлять иконку'); }
+    return;
+  }
   if (action === 'ask') {
     const link = botLink();
     if (link) return openLink(link);
@@ -1206,6 +1256,12 @@ if (inTelegram) {
     try { tg.requestFullscreen(); } catch { /* не поддерживается */ }
   }
   if (tgVersion('7.7')) tg.disableVerticalSwipes();
+  checkHome();
+  tg.onEvent('homeScreenAdded', () => {
+    homeStatus = 'added';
+    toast('Иконка добавлена на экран');
+    refresh();
+  });
 }
 
 render();
@@ -1213,4 +1269,14 @@ render();
 if (remote) {
   pull();
   document.addEventListener('visibilitychange', () => { if (!document.hidden) pull(); });
+  window.addEventListener('online', pull);
+  window.addEventListener('offline', () => {
+    offline = true;
+    refresh();
+  });
+}
+
+// Файлы приложения кладём в кэш телефона: открывается мгновенно и без сети показывает последние данные
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  navigator.serviceWorker.register('sw.js').catch(() => { /* webview без service worker — работаем как раньше */ });
 }

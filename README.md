@@ -19,7 +19,7 @@
 
 | Где | Что |
 |---|---|
-| `index.html`, `app.js`, `styles.css` | мини-приложение (HTML/CSS/JS без сборки). Вне Telegram работает в демо-режиме с примером данных |
+| `index.html`, `app.js`, `styles.css`, `sw.js` | мини-приложение (HTML/CSS/JS без сборки). Вне Telegram работает в демо-режиме с примером данных |
 | `supabase/functions/debts/` | серверная функция Supabase: вебхук бота, API приложения, напоминания, разговор с ИИ (`gemini.ts`, запасные `groq.ts` и `claude.ts`) |
 | `supabase/migrations/` | таблицы `debt*`, служебный ключ для расписания и права для серверной функции |
 
@@ -53,7 +53,7 @@ supabase secrets set --project-ref fpyxaygiiiivnjrujqyf \
 supabase functions deploy debts --project-ref fpyxaygiiiivnjrujqyf --no-verify-jwt
 ```
 
-Необязательные настройки: `DEBTS_TZ` (по умолчанию `Europe/Moscow`), `DEBTS_GEMINI_MODEL` (по умолчанию `gemini-flash-latest` — свежая модель Flash, доступная бесплатно).
+Необязательные настройки: `DEBTS_TZ` (по умолчанию `Europe/Moscow`), `DEBTS_GEMINI_MODEL` (по умолчанию бот сам подбирает рабочую бесплатную модель Flash и переходит на следующую, если у этой кончился лимит).
 
 ### 4. Подключить бота
 Откройте в браузере (подставьте свой секрет):
@@ -69,6 +69,10 @@ https://fpyxaygiiiivnjrujqyf.supabase.co/functions/v1/debts/setup?key=ваш-с�
 
 ### 6. Мини-приложение
 Корень репозитория публикуется через GitHub Pages по адресу `https://klimgr.github.io/dolgi/` — этот адрес и нужно указать в `DEBTS_APP_URL`. Если Pages ещё не включён: Settings → Pages → Deploy from a branch → `main`.
+
+Кнопка **«Открыть»** у бота в списке чатов и в его профиле — это «главное мини-приложение», его включают только в @BotFather: `/mybots` → бот → **Bot Settings → Configure Mini App → Enable Mini App** → отправить адрес `https://klimgr.github.io/dolgi/`; режим запуска — **Fullscreen**. После этого во вкладке «Важное» работает кнопка «Добавить на экран» (иконка на рабочем столе телефона).
+
+`sw.js` кладёт файлы приложения в кэш телефона: оно открывается сразу, а без сети показывает последние загруженные данные с пометкой «Нет интернета» (менять их без сети нельзя). Меняя `app.js` или `styles.css`, поднимайте `?v=` в `index.html` — иначе телефон оставит старую копию.
 
 ### 7. Начать
 Вы и жена открываете бота и нажимаете **«Старт»** — без этого Telegram не даст боту писать напоминания. Дальше просто пришлите первый договор.

@@ -37,8 +37,9 @@ function errorFor(status: number, body: string): AiError {
 /** Новый формат ключа: AI Studio или Vertex — выясняем пробными запросами */
 export const isNewKey = (key: string) => key.startsWith('AQ.');
 
-/** Модели, которые пробуем по очереди, если DEBTS_GEMINI_MODEL не задан. «latest» у Google бывает перегружена (503) — она не первая */
-export const MODEL_CANDIDATES = ['gemini-3-flash-preview', 'gemini-flash-latest', 'gemini-3-flash', 'gemini-2.5-flash'];
+/** Модели, которые пробуем по очереди, если DEBTS_GEMINI_MODEL не задан. «latest» у Google бывает перегружена (503) — она не первая.
+ * gemini-2.5-flash убрана: новым ключам Google её больше не даёт (404) */
+export const MODEL_CANDIDATES = ['gemini-3-flash-preview', 'gemini-flash-latest', 'gemini-3.8-flash', 'gemini-3-flash'];
 
 /** Куда и как передать ключ: в заголовке x-goog-api-key, в адресе (?key=, как в документации экспресс-режима Vertex) или как Bearer */
 type Auth = 'header' | 'query' | 'bearer';
@@ -63,22 +64,36 @@ function request(model: string, key: string, { api, auth }: Way, body: unknown):
 
 async function generate(contents: Content[]): Promise<GeminiResponse> {
   const key = GEMINI_API_KEY();
-  const { model, way } = await working();
-  const [url, init] = request(model, key, way, {
-    systemInstruction: { parts: [{ text: SYSTEM }] },
-    contents,
-    tools: [{ functionDeclarations: declarations }],
-    toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
-    generationConfig: { maxOutputTokens: 16384 },
-  });
-  let res: Response;
-  try {
-    res = await fetch(url, { ...init, signal: AbortSignal.timeout(120_000) });
-  } catch (e) {
-    throw new AiError('down', String(e));
+  // Посреди работы с инструментами модель не меняем: в истории её подписи размышлений, другая их не примет
+  const midTask = contents.some(c => c.parts.some(p => p.functionCall || p.thoughtSignature));
+  for (let attempt = 0; ; attempt++) {
+    const { model, way } = await working();
+    const [url, init] = request(model, key, way, {
+      systemInstruction: { parts: [{ text: SYSTEM }] },
+      contents,
+      tools: [{ functionDeclarations: declarations }],
+      toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
+      generationConfig: { maxOutputTokens: 16384 },
+    });
+    let res: Response;
+    try {
+      res = await fetch(url, { ...init, signal: AbortSignal.timeout(120_000) });
+    } catch (e) {
+      throw new AiError('down', String(e));
+    }
+    if (res.ok) return await res.json();
+    const err = errorFor(res.status, await res.text());
+    // Лимит этой модели кончился или её убрали — на время откладываем её и берём следующую из списка
+    if ((res.status === 429 || res.status === 404) && !GEMINI_MODEL()) {
+      tired.set(model, Date.now() + (res.status === 404 ? 24 * 3600e3 : 15 * 60e3));
+      found = null;
+      if (!midTask && attempt < 2) {
+        console.log('gemini switch model', model, res.status);
+        continue;
+      }
+    }
+    throw err;
   }
-  if (!res.ok) throw errorFor(res.status, await res.text());
-  return await res.json();
 }
 
 const parseJson = (s: string) => {
@@ -136,20 +151,30 @@ export async function runGemini({ history, context, attachments, userText, ctx }
 
 /* ---------- подбор модели и проверка ключа ---------- */
 let found: { model: string; way: Way } | null = null;
+/** Модели, у которых кончился лимит или которых нет: до какого времени их не пробуем */
+const tired = new Map<string, number>();
 /** Для тестов: забыть найденную модель */
-export const forgetChoice = () => void (found = null);
+export const forgetChoice = () => {
+  found = null;
+  tired.clear();
+};
+
+/** Какую ошибку показать, если не ответила ни одна модель: лимит и сбой Google важнее, чем «такой модели нет» */
+const RANK = (s: number) => (s === 429 ? 0 : s === 0 || s >= 500 ? 1 : s === 401 || s === 403 ? 2 : s === 404 ? 4 : 3);
 
 /** Модель и способ передачи ключа, которые работают с этим ключом (запоминаем до перезапуска функции) */
 async function working() {
   if (found) return found;
   // Старый ключ AI Studio с заданной моделью проверять незачем; для нового узнаём, куда и как его передавать
   if (GEMINI_MODEL() && !isNewKey(GEMINI_API_KEY())) return { model: GEMINI_MODEL(), way: waysFor(GEMINI_API_KEY())[0] };
-  const models = GEMINI_MODEL() ? [GEMINI_MODEL()] : MODEL_CANDIDATES;
+  const fresh = MODEL_CANDIDATES.filter(m => (tired.get(m) ?? 0) < Date.now());
+  const models = GEMINI_MODEL() ? [GEMINI_MODEL()] : fresh.length ? fresh : MODEL_CANDIDATES;
   const check = await checkGemini(models);
   const ok = check.results.find(r => r.status === 200);
   if (!ok) {
-    const last = check.results.at(-1);
-    throw errorFor(last?.status ?? 500, last?.message ?? 'нет ответа');
+    for (const r of check.results) if (r.status === 429 || r.status === 404) tired.set(r.model, Date.now() + 15 * 60e3);
+    const worst = [...check.results].sort((a, b) => RANK(a.status) - RANK(b.status))[0];
+    throw errorFor(worst?.status ?? 500, worst?.message ?? 'нет ответа');
   }
   found = { model: ok.model, way: { api: ok.api, auth: ok.auth } };
   return found;
