@@ -53,10 +53,11 @@ async function setup() {
   return { ok: true, bot: `@${me.username}`, webhook: `${base}/webhook`, app: APP_URL || 'DEBTS_APP_URL не задан — кнопки приложения не будет' };
 }
 
-// Аватарка лежит рядом с мини-приложением (avatar.jpg в корне репозитория), бот ставит её себе сам
+// Аватарка — avatar.jpg в корне репозитория; бот ставит её себе сам.
+// Берём прямо из репозитория: сайт на GitHub Pages может обновиться позже
+const AVATAR_URL = 'https://raw.githubusercontent.com/klimGr/dolgi/main/avatar.jpg';
 async function setAvatar() {
-  if (!APP_URL) throw new Error('DEBTS_APP_URL не задан — неоткуда взять avatar.jpg');
-  const res = await fetch(new URL('avatar.jpg', APP_URL.endsWith('/') ? APP_URL : APP_URL + '/'));
+  const res = await fetch(AVATAR_URL);
   if (!res.ok) throw new Error(`avatar.jpg: ${res.status}`);
   const photo = new Blob([await res.arrayBuffer()], { type: 'image/jpeg' });
   await tgUpload('setMyProfilePhoto', { photo: { type: 'static', photo: 'attach://avatar' } }, { avatar: photo });
