@@ -160,8 +160,11 @@ function totals(list) {
   const monthly = list.filter(isOpen).reduce((s, d) => s + Math.min(d.minPayment || 0, d.balance), 0);
   return { start, balance, paid: start - balance, pct: pctLeft(balance, start), monthly };
 }
-function payoffMonths(d) {
+const monthsTo = (from, to) => (Number(to.slice(0, 4)) - Number(from.slice(0, 4))) * 12 + Number(to.slice(5, 7)) - Number(from.slice(5, 7));
+// Кредит или займ с датой окончания гасится по графику банка (ставка может меняться) — верим договору
+function payoffMonths(d, today) {
   if (!isOpen(d)) return 0;
+  if (d.endDate && d.kind !== 'card' && today && d.endDate >= today) return Math.max(1, monthsTo(today, d.endDate));
   const pay = d.minPayment || 0;
   if (pay <= 0) return null;
   const r = (d.rate || 0) / 1200;
@@ -173,7 +176,7 @@ function payoffMonths(d) {
 function freeBy(list, today) {
   let max = 0, unknown = 0, never = 0;
   for (const d of list.filter(isOpen)) {
-    const m = payoffMonths(d);
+    const m = payoffMonths(d, today);
     if (m === null) unknown++;
     else if (m === Infinity) never++;
     else max = Math.max(max, m);
@@ -236,6 +239,8 @@ if (!remote) saveLocal();
 const meName = () => data.me?.name || tg?.initDataUnsafe?.user?.first_name || '';
 const findDebt = id => data.debts.find(d => d.id === id);
 const ownerName = id => (id === 'common' ? 'Общий' : data.members.find(m => m.id === id)?.name || '');
+// «к» / «л» на шкале: у двух карт одного банка цвет один, буква подсказывает, чья
+const ownerLetter = id => (id === 'common' ? '' : (ownerName(id)[0] || '').toLowerCase());
 const today = () => todayKey();
 
 /* ---------- сервер ---------- */
@@ -385,11 +390,19 @@ function render(scrollTop, anim) {
   if (loaded && !top && state.tab === 'home') state.intro = false;
 }
 
-// Подписи внутри полосок показываем, только если помещаются
+// Подписи внутри полосок показываем, только если помещаются; не влезает — пробуем короткую (букву владельца)
 function fitLabels() {
   for (const el of app.querySelectorAll('.scale [data-fit]')) {
     const span = el.firstElementChild;
-    el.dataset.fit = span && span.offsetWidth + 10 <= el.clientWidth ? 'yes' : 'no';
+    if (!span) { el.dataset.fit = 'no'; continue; }
+    span.dataset.full ??= span.innerHTML;
+    span.innerHTML = span.dataset.full;
+    let fits = span.offsetWidth + 10 <= el.clientWidth;
+    if (!fits && el.dataset.short) {
+      span.textContent = el.dataset.short;
+      fits = span.offsetWidth + 6 <= el.clientWidth;
+    }
+    el.dataset.fit = fits ? 'yes' : 'no';
   }
 }
 window.addEventListener('resize', fitLabels);
@@ -471,8 +484,11 @@ function dueInfo(d) {
   else if (days === 0) { when = 'сегодня'; cls = 'soon'; }
   else if (days === 1) { when = 'завтра'; cls = 'soon'; }
   else { when = `через ${days} ${plural(days, 'день', 'дня', 'дней')}`; if (days <= 3) cls = 'soon'; }
-  return { due, days, when, cls, amount: dueAmount(d) };
+  // У карты без минимального платежа сумму знает только банк — не выдаём весь долг за платёж
+  return { due, days, when, cls, amount: dueAmount(d), known: !!d.minPayment || d.kind !== 'card' };
 }
+const dueText = i => (i.known ? money(i.amount) : 'сумма не указана');
+const dueSum = items => items.reduce((s, x) => s + (x.i.known ? x.i.amount : 0), 0);
 
 /** Шкала 100 % → 0 %: слева серым — что уже погасили, справа цветом — что осталось */
 function scaleBar(list, size, opts = {}) {
@@ -482,9 +498,10 @@ function scaleBar(list, size, opts = {}) {
   const paidLabel = size === 'lg' && t.start ? `<span>погашено ${pctText(paid / t.start)}%</span>` : '<span></span>';
   const segs = open.map(d => {
     const share = t.start ? d.balance / t.start : 0;
-    const label = size === 'lg' ? `<span>${pctText(share)}%</span>` : '<span></span>';
+    const who = ownerLetter(d.owner);
+    const label = size === 'lg' ? `<span>${who ? `<i class="who">${esc(who)}</i>` : ''}${pctText(share)}%</span>` : '<span></span>';
     const attrs = size === 'lg'
-      ? `data-go="debt" data-id="${d.id}" data-tip="${esc(d.name)}|${money(d.balance)}" aria-label="${esc(d.name)}: ${money(d.balance)}"`
+      ? `data-go="debt" data-id="${d.id}" data-tip="${esc(d.name)}|${money(d.balance)}" aria-label="${esc(d.name)}: ${money(d.balance)}"${who ? ` data-short="${esc(who)}"` : ''}`
       : '';
     return `<${size === 'lg' ? 'button' : 'div'} class="seg c${d.color}" style="flex:${d.balance} 1 0" data-fit ${attrs}>${label}</${size === 'lg' ? 'button' : 'div'}>`;
   }).join('');
@@ -498,9 +515,10 @@ function scaleBar(list, size, opts = {}) {
 
 /* ---------- таб-бар ---------- */
 function renderTabbar() {
-  const tabs = [['home', 'Долги', ICON.chart], ['payments', 'Платежи', ICON.calendar]];
-  return tabs.map(([key, label, icon]) =>
-    `<button class="tab ${state.tab === key ? 'active' : ''}" data-tab="${key}">${icon}<span>${label}</span></button>`).join('');
+  const warn = loaded ? insights(visibleDebts()).filter(x => x.level === 'warn').length : 0;
+  const tabs = [['home', 'Долги', ICON.chart], ['payments', 'Платежи', ICON.calendar], ['tips', 'Важное', ICON.bulb, warn]];
+  return tabs.map(([key, label, icon, badge]) =>
+    `<button class="tab ${state.tab === key ? 'active' : ''}" data-tab="${key}">${icon}${badge ? `<b class="badge">${badge}</b>` : ''}<span>${label}</span></button>`).join('');
 }
 
 /* ---------- главная ---------- */
@@ -550,7 +568,7 @@ function nextCard(list) {
       <div class="next-main">
         <div class="next-title"><span class="dot c${d.color}"></span><span>${esc(d.name)}</span></div>
         <div class="next-sub ${i.cls === 'late' ? 'late' : ''}">${i.when}</div>
-        <div class="next-sum">${money(i.amount)}</div>
+        <div class="next-sum">${dueText(i)}</div>
       </div>
       <button class="chip" data-go="op" data-kind="payment" data-id="${d.id}" data-due="1" aria-label="Оплачено">${ICON.check}<span>Оплачено</span></button>
     </div>`;
@@ -562,7 +580,7 @@ function debtCard(d) {
   const owner = ownerName(d.owner);
   const foot = !isOpen(d)
     ? '<div class="due done">Погашен ✓</div>'
-    : i ? `<div class="due ${i.cls}">${i.cls === 'late' ? `Просрочен с ${dayMonth(i.due)}` : `Платёж ${dayMonth(i.due)}`}<br><b>${money(i.amount)}</b></div>`
+    : i ? `<div class="due ${i.cls}">${i.cls === 'late' ? `Просрочен с ${dayMonth(i.due)}` : `Платёж ${dayMonth(i.due)}`}<br><b>${dueText(i)}</b></div>`
       : '<div class="due">День платежа не указан</div>';
   return `
     <button class="card debt-card tap ${isOpen(d) ? '' : 'closed'}" data-go="debt" data-id="${d.id}">
@@ -575,21 +593,6 @@ function debtCard(d) {
     </button>`;
 }
 
-function adviceCard(list) {
-  const first = byRate(list)[0];
-  if (!first) return '';
-  const owner = ownerName(first.owner);
-  const ask = data.bot || !remote
-    ? `<button class="chip ghost" data-action="ask">${ICON.chat}Спросить бота</button>` : '';
-  return `
-    <div class="card tipcard">
-      <div class="ico">${ICON.bulb}</div>
-      <div>
-        <p>Свободные деньги сверх минимума выгоднее всего направлять на <b>«${esc(first.name)}»</b>${owner && first.owner !== 'common' ? ` (${esc(owner)})` : ''} — у него самая высокая ставка, ${nf1.format(first.rate)}% годовых.</p>
-        ${ask}
-      </div>
-    </div>`;
-}
 
 function subscribeCard() {
   if (!remote || !data.me || data.me.subscribed || !data.bot) return '';
@@ -605,7 +608,9 @@ function renderHome() {
   const now = new Date();
   const list = visibleDebts();
   const open = list.filter(isOpen);
-  const sorted = [...open].sort((a, b) => b.balance - a.balance).concat(list.filter(d => !isOpen(d)));
+  // Микрозаймы — всегда сверху, дальше по убыванию долга, погашенные в конце
+  const sorted = [...open].sort((a, b) => (b.kind === 'microloan') - (a.kind === 'microloan') || b.balance - a.balance)
+    .concat(list.filter(d => !isOpen(d)));
   const head = `${demoBanner()}
     <header class="hero row">
       <div>
@@ -634,7 +639,6 @@ function renderHome() {
     ${sorted.length ? `
       <div class="section-head lg"><h2 class="section-title lg">По отдельности</h2></div>
       <div class="grid">${sorted.map(debtCard).join('')}</div>` : ''}
-    ${adviceCard(list)}
     <button class="btn primary" data-go="edit">${ICON.plus}Добавить долг</button>
     <p class="hint-line">Или отправьте боту договор, график платежей или скриншот — он заполнит всё сам.</p>`;
 }
@@ -646,7 +650,7 @@ function renderPayments() {
   const ids = new Set(list.map(d => d.id));
   const upcoming = list.map(d => ({ d, i: dueInfo(d) })).filter(x => x.i).sort((a, b) => a.i.due.localeCompare(b.i.due));
   const month = t.slice(0, 7);
-  const dueThisMonth = upcoming.filter(x => x.i.due.slice(0, 7) <= month).reduce((s, x) => s + x.i.amount, 0);
+  const dueThisMonth = dueSum(upcoming.filter(x => x.i.due.slice(0, 7) <= month));
   const paidThisMonth = data.events.filter(e => ids.has(e.debtId) && e.type === 'payment' && e.date.slice(0, 7) === month).reduce((s, e) => s + e.amount, 0);
   const events = data.events.filter(e => ids.has(e.debtId)).sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
 
@@ -673,7 +677,7 @@ function renderPayments() {
         <button class="daybox" data-go="debt" data-id="${d.id}"><b>${Number(i.due.slice(8, 10))}</b><span>${MONTHS_SHORT[Number(i.due.slice(5, 7)) - 1]}</span></button>
         <button class="row-main" data-go="debt" data-id="${d.id}" style="text-align:left">
           <div class="row-title"><span class="dot c${d.color}"></span> ${esc(d.name)}</div>
-          <div class="row-sub ${i.cls}">${money(i.amount)} · ${i.when}</div>
+          <div class="row-sub ${i.cls}">${dueText(i)} · ${i.when}</div>
         </button>
         <button class="mark" data-go="op" data-kind="payment" data-id="${d.id}" data-due="1" aria-label="Отметить оплату">${ICON.check}</button>
       </div>`).join('')}</div>`
@@ -703,7 +707,84 @@ function eventRow(e, inDebt = false) {
     </button>`;
 }
 
-const TABS = { home: renderHome, payments: renderPayments };
+/* ---------- важное ---------- */
+// Проценты за месяц — оценка по ставке и остатку, без учёта беспроцентных периодов
+const monthlyInterest = d => (isOpen(d) && d.rate ? d.balance * d.rate / 1200 : 0);
+
+/** Что стоит знать о долгах: { level: warn|info, icon, title, text, rows: [{ d, value, go }] } */
+function insights(list) {
+  const t = today();
+  const open = list.filter(isOpen);
+  const out = [];
+
+  const week = open.map(d => ({ d, i: dueInfo(d) })).filter(x => x.i && x.i.days <= 7).sort((a, b) => a.i.due.localeCompare(b.i.due));
+  const late = week.filter(x => x.i.cls === 'late');
+  if (late.length) out.push({ level: 'warn', icon: ICON.bell, title: `Просрочено: ${money(dueSum(late))}`,
+    text: 'Отметьте оплату, если уже внесли, — или внесите как можно скорее.', rows: late.map(x => ({ d: x.d, value: `${dueText(x.i)} · ${x.i.when}` })) });
+  const soon = week.filter(x => x.i.cls !== 'late');
+  if (soon.length) out.push({ level: 'info', icon: ICON.calendar, title: `На этой неделе: ${money(dueSum(soon))}`,
+    rows: soon.map(x => ({ d: x.d, value: `${dueText(x.i)} · ${x.i.when}` })) });
+
+  const short = open.filter(d => d.minPayment && d.minPayment < monthlyInterest(d) - 0.5);
+  if (short.length) out.push({ level: 'warn', icon: ICON.up, title: 'Платёж меньше процентов',
+    text: 'Если вносить только минимум, эти долги будут расти, а не уменьшаться.',
+    rows: short.map(d => ({ d, value: `${money(d.minPayment)} / ≈${money(monthlyInterest(d))}` })) });
+
+  const over = open.filter(d => d.kind === 'card' && d.limit && d.balance > d.limit + 0.5);
+  if (over.length) out.push({ level: 'warn', icon: ICON.card, title: 'Долг больше лимита',
+    text: 'Банки обычно берут плату за превышение лимита и могут заблокировать карту — проверьте условия.',
+    rows: over.map(d => ({ d, value: `+${money(d.balance - d.limit)}` })) });
+  const full = open.filter(d => d.kind === 'card' && d.limit && d.balance <= d.limit + 0.5 && d.balance / d.limit >= 0.9);
+  if (full.length) out.push({ level: 'info', icon: ICON.card, title: 'Лимит почти исчерпан',
+    rows: full.map(d => ({ d, value: `свободно ${money(d.limit - d.balance)}` })) });
+
+  const first = byRate(open)[0];
+  if (first) {
+    const owner = ownerName(first.owner);
+    out.push({ level: 'info', icon: ICON.bulb, title: 'Самая высокая ставка',
+      text: `Свободные деньги сверх минимума выгоднее всего направлять на «${first.name}»${owner && first.owner !== 'common' ? ` (${owner})` : ''} — у него ${nf1.format(first.rate)}% годовых.`,
+      rows: byRate(open).slice(0, 3).map(d => ({ d, value: `${nf1.format(d.rate)}%` })), ask: true });
+  }
+
+  const interest = open.map(d => ({ d, v: monthlyInterest(d) })).filter(x => x.v > 0).sort((a, b) => b.v - a.v);
+  if (interest.length) out.push({ level: 'info', icon: ICON.chart, title: `Проценты ≈ ${money(interest.reduce((s, x) => s + x.v, 0))} в месяц`,
+    text: 'Оценка по ставке и остатку: где действует беспроцентный период, будет меньше.',
+    rows: interest.slice(0, 4).map(x => ({ d: x.d, value: `≈${money(x.v)}` })) });
+
+  const planned = open.filter(d => d.endDate && d.kind !== 'card' && d.endDate >= t).sort((a, b) => a.endDate.localeCompare(b.endDate));
+  if (planned.length) out.push({ level: 'info', icon: ICON.check, title: 'Закроются по графику',
+    rows: planned.map(d => ({ d, value: `${dayMonth(d.endDate)} ${d.endDate.slice(0, 4)}` })) });
+
+  const missing = open.map(d => ({ d, what: [!d.minPayment && 'платёж', !d.payDay && 'дата', d.rate == null && 'ставка'].filter(Boolean) })).filter(x => x.what.length);
+  if (missing.length) out.push({ level: 'info', icon: ICON.edit, title: 'Не хватает данных',
+    text: 'Без них бот не напомнит точную сумму, а прогноз будет неточным.',
+    rows: missing.map(x => ({ d: x.d, value: `нет: ${x.what.join(', ')}`, go: 'edit' })) });
+
+  return out;
+}
+
+function renderTips() {
+  const list = visibleDebts();
+  const items = insights(list);
+  const ask = data.bot || !remote ? `<button class="chip ghost" data-action="ask">${ICON.chat}Спросить бота</button>` : '';
+  return `
+    ${demoBanner()}
+    <header class="hero"><h1 class="large-title">Важное</h1></header>
+    ${ownerFilter()}
+    ${items.length ? items.map(x => `
+      <div class="card insight ${x.level === 'warn' ? 'alert' : ''}">
+        <div class="ico">${x.icon}</div>
+        <div class="insight-main">
+          <div class="insight-title">${esc(x.title)}</div>
+          ${x.text ? `<p>${esc(x.text)}</p>` : ''}
+          ${x.rows?.length ? `<div class="insight-rows">${x.rows.map(r => `
+            <button data-go="${r.go || 'debt'}" data-id="${r.d.id}"><span class="dot c${r.d.color}"></span><span class="n">${esc(r.d.name)}</span><span class="v">${esc(r.value)}</span></button>`).join('')}</div>` : ''}
+          ${x.ask ? ask : ''}
+        </div>
+      </div>`).join('') : emptyState('Всё спокойно', 'Здесь появятся ближайшие платежи, превышения лимита и другие вещи, которые стоит знать.')}`;
+}
+
+const TABS = { home: renderHome, payments: renderPayments, tips: renderTips };
 
 /* ---------- экран долга ---------- */
 function notFound() {
@@ -712,7 +793,7 @@ function notFound() {
 
 function forecastText(d) {
   if (!isOpen(d)) return '<span class="done">Погашен</span>';
-  const m = payoffMonths(d);
+  const m = payoffMonths(d, today());
   if (m === null) return 'укажите платёж';
   if (m === Infinity) return '<span class="warn">платёж меньше процентов</span>';
   const [y, mo] = today().split('-').map(Number);
@@ -756,7 +837,7 @@ function renderDebt({ id }) {
       <div class="card next ${i.cls}" style="margin:0">
         <div class="next-date"><b>${Number(i.due.slice(8, 10))}</b><span>${MONTHS_SHORT[Number(i.due.slice(5, 7)) - 1]}</span></div>
         <div class="next-main">
-          <div class="next-sum" style="margin:0">${money(i.amount)}</div>
+          <div class="next-sum" style="margin:0">${dueText(i)}</div>
           <div class="next-sub ${i.cls === 'late' ? 'late' : ''}">${i.when}</div>
         </div>
         <button class="chip" data-go="op" data-kind="payment" data-id="${d.id}" data-due="1" aria-label="Оплачено">${ICON.check}<span>Оплачено</span></button>
@@ -853,7 +934,7 @@ function renderOp({ id, kind }) {
   if (!d) return notFound();
   const op = OPS[kind] || OPS.payment;
   const i = dueInfo(d);
-  const value = kind === 'payment' ? (i ? i.amount : d.minPayment || '') : kind === 'balance' ? d.balance : '';
+  const value = kind === 'payment' ? (i?.known ? i.amount : d.minPayment || '') : kind === 'balance' ? d.balance : '';
   const quick = kind === 'payment' && d.balance > 0
     ? [d.minPayment && d.minPayment < d.balance ? ['Минимум', d.minPayment] : null, ['Весь долг', d.balance]].filter(Boolean) : [];
   return `
@@ -869,7 +950,7 @@ function renderOp({ id, kind }) {
         ${field('Дата', `<input name="date" type="date" value="${today()}" max="${today()}" required>`)}
         ${field('Комментарий', '<input name="note" maxlength="120" placeholder="необязательно">')}
       </div>
-      ${kind === 'payment' && i ? `<p class="form-hint">Если внесёте не меньше ${money(i.amount)}, платёж за ${dayMonth(i.due)} отметится как оплаченный.</p>` : ''}
+      ${kind === 'payment' && i?.known ? `<p class="form-hint">Если внесёте не меньше ${money(i.amount)}, платёж за ${dayMonth(i.due)} отметится как оплаченный.</p>` : ''}
       <button class="btn primary" type="submit">${op.btn}</button>
     </form>`;
 }

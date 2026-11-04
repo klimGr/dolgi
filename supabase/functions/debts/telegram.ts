@@ -14,6 +14,17 @@ export async function tg<T = unknown>(method: string, body: Record<string, unkno
   return data.result as T;
 }
 
+/** Вызов с файлами (multipart/form-data): файлы — отдельными полями, ссылка на них — attach://<поле> */
+export async function tgUpload<T = unknown>(method: string, fields: Record<string, unknown>, files: Record<string, Blob>): Promise<T> {
+  const form = new FormData();
+  for (const [k, v] of Object.entries(fields)) form.append(k, typeof v === 'string' ? v : JSON.stringify(v));
+  for (const [k, f] of Object.entries(files)) form.append(k, f, k);
+  const res = await fetch(`${API}/${method}`, { method: 'POST', body: form });
+  const data = await res.json();
+  if (!data.ok) throw new Error(`Telegram ${method}: ${data.description}`);
+  return data.result as T;
+}
+
 export type Keyboard = { inline_keyboard: Record<string, unknown>[][] } | Record<string, unknown>;
 
 /** Отправить HTML; длинное режем на части; если разметка сломалась — шлём простым текстом */

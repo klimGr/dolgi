@@ -3,7 +3,7 @@ import { AiError, type Attachment, chat } from './assistant.ts';
 import { APP_URL, isAllowed, TZ } from './config.ts';
 import * as db from './db.ts';
 import { byMonth, dayMonth, esc, kindName, money, pct, toTelegramHtml, whenText } from './format.ts';
-import { type Debt, dueAmount, freeBy, isOpen, nextDue, today, totals } from './logic.ts';
+import { type Debt, dueAmount, dueKnown, freeBy, isOpen, nextDue, today, totals } from './logic.ts';
 import * as svc from './service.ts';
 import { downloadFile, type Keyboard, keepTyping, sendText, tg, toBase64, type TgUser, userName } from './telegram.ts';
 
@@ -92,7 +92,7 @@ export async function summaryText() {
     const due = nextDue(d, t);
     const owner = members.find(x => x.id === d.owner)?.name;
     lines.push(`• <b>${esc(d.name)}</b>${owner ? ` (${esc(owner)})` : ''} — ${money(d.balance)}, ${pct(d.balance / Math.max(d.start, 1))}` +
-      (due ? `\n   платёж ${dayMonth(due)} · ${money(dueAmount(d))}` : ''));
+      (due ? `\n   платёж ${dayMonth(due)} · ${dueText(d)}` : ''));
   }
   const closed = debts.filter(d => !isOpen(d)).length;
   if (closed) lines.push(`\nЗакрыто: ${closed} ✅`);
@@ -105,7 +105,7 @@ async function upcomingText() {
     .sort((a, b) => a.due.localeCompare(b.due));
   if (!list.length) return 'Ближайших платежей нет. Укажите день платежа у долгов — и я начну напоминать.';
   return ['<b>Ближайшие платежи</b>', ...list.slice(0, 15).map(({ d, due }) =>
-    `• ${dayMonth(due)} (${whenText(t, due)}) — <b>${money(dueAmount(d))}</b>, ${esc(d.name)}`)].join('\n');
+    `• ${dayMonth(due)} (${whenText(t, due)}) — <b>${dueText(d)}</b>, ${esc(d.name)}`)].join('\n');
 }
 
 /* ---------- файлы ---------- */
@@ -204,7 +204,8 @@ async function onCallback(q: TgCallback) {
   const d = debtId ? await db.debt(debtId) : null;
   if (!d) return answer('Долг не найден — возможно, его удалили');
 
-  if (kind === 'other') {
+  // Сумму платежа по карте знает только банк — не списываем весь долг одной кнопкой, спрашиваем сумму
+  if (kind === 'other' || (kind === 'pay' && !dueKnown(d))) {
     await answer('Напишите сумму в чат');
     return void await sendText(q.from.id, `Сколько внесли по «${esc(d.name)}»? Напишите, например: «оплатил 7000 по ${esc(d.name)}».`);
   }
@@ -238,7 +239,9 @@ export function reminderText(d: Debt, due: string, t: string, owner?: string) {
   return [
     head,
     `<b>${esc(d.name)}</b>${owner ? ` · ${esc(owner)}` : ''} · ${kindName(d).toLowerCase()}`,
-    `К оплате: <b>${money(dueAmount(d))}</b>${d.minPayment ? '' : ' (минимальный платёж не указан — показан весь остаток)'}`,
+    dueKnown(d)
+      ? `К оплате: <b>${money(dueAmount(d))}</b>${d.minPayment ? '' : ' (минимальный платёж не указан — показан весь остаток)'}`
+      : 'К оплате: сумма не указана — посмотрите в приложении банка',
     `Остаток долга: ${money(d.balance)}`,
   ].join('\n');
 }
@@ -246,5 +249,10 @@ export function reminderText(d: Debt, due: string, t: string, owner?: string) {
 export function reminderKeyboard(d: Debt, due: string): Keyboard {
   const row2: Record<string, unknown>[] = [{ text: 'Другая сумма', callback_data: `other:${d.id}` }];
   if (APP_URL) row2.push({ text: '📊 Открыть', web_app: { url: APP_URL } });
-  return { inline_keyboard: [[{ text: `✅ Оплачено ${money(dueAmount(d))}`, callback_data: `pay:${d.id}:${due}` }], row2] };
+  const pay = dueKnown(d)
+    ? { text: `✅ Оплачено ${money(dueAmount(d))}`, callback_data: `pay:${d.id}:${due}` }
+    : { text: '✅ Внёс — указать сумму', callback_data: `other:${d.id}` };
+  return { inline_keyboard: [[pay], row2] };
 }
+
+const dueText = (d: Debt) => (dueKnown(d) ? money(dueAmount(d)) : 'сумма не указана');

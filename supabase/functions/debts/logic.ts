@@ -126,6 +126,8 @@ export function nextDue(d: Debt, todayStr: string): string | null {
 
 /** Сколько вносить в ближайший срок: минимальный платёж, но не больше остатка */
 export const dueAmount = (d: Debt) => Math.min(d.minPayment || d.balance, d.balance);
+/** Знаем ли сумму платежа: у карты без минимального платежа её знает только банк (весь долг — не платёж) */
+export const dueKnown = (d: Debt) => !!d.minPayment || d.kind !== 'card';
 
 /** Внести платёж: уменьшает остаток и, если набран минимум за период, закрывает ближайший срок */
 export function applyPayment(d: Debt, events: DebtEvent[], amount: number, date: string, by: string, note: string, todayStr: string): DebtEvent {
@@ -177,12 +179,18 @@ export function totals(list: Debt[]) {
   return { start, balance, paid: start - balance, pct: pctLeft(balance, start), monthly };
 }
 
+/** Сколько календарных месяцев от месяца from до месяца to */
+const monthsTo = (from: string, to: string) =>
+  (Number(to.slice(0, 4)) - Number(from.slice(0, 4))) * 12 + Number(to.slice(5, 7)) - Number(from.slice(5, 7));
+
 /**
  * Сколько месяцев до нуля при минимальных платежах.
  * null — не знаем платёж; Infinity — платёж не покрывает проценты.
+ * Кредит или займ с датой окончания гасится по графику банка (ставка там может меняться) — верим договору.
  */
-export function payoffMonths(d: Debt): number | null {
+export function payoffMonths(d: Debt, todayStr?: string): number | null {
   if (!isOpen(d)) return 0;
+  if (d.endDate && d.kind !== 'card' && todayStr && d.endDate >= todayStr) return Math.max(1, monthsTo(todayStr, d.endDate));
   const pay = d.minPayment || 0;
   if (pay <= 0) return null;
   const r = (d.rate || 0) / 1200;
@@ -202,7 +210,7 @@ export function freeBy(list: Debt[], todayStr: string): { month: string | null; 
   let unknown = 0;
   let never = 0;
   for (const d of list.filter(isOpen)) {
-    const m = payoffMonths(d);
+    const m = payoffMonths(d, todayStr);
     if (m === null) unknown++;
     else if (m === Infinity) never++;
     else max = Math.max(max, m);

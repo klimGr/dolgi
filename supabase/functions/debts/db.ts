@@ -20,12 +20,11 @@ export async function members(): Promise<Member[]> {
   return rows.map(r => ({ id: String(r.tg_id), name: String(r.name || ''), chatId: num(r.chat_id) }));
 }
 
-/** Запомнить участника; chat_id — только когда он написал боту (иначе не трогаем) */
+/** Запомнить участника; chat_id — только когда он написал боту (иначе не трогаем).
+ *  Имя из Telegram берём лишь при первом знакомстве: дальше оно своё («Клим», «Лера») и не перезаписывается */
 export async function touchMember(id: number, name: string, chatId?: number) {
-  const row: Record<string, unknown> = { tg_id: id };
-  if (name) row.name = name;
-  if (chatId) row.chat_id = chatId;
-  ok(await sb.from('debt_members').upsert(row, { onConflict: 'tg_id' }));
+  ok(await sb.from('debt_members').upsert({ tg_id: id, name: name || '' }, { onConflict: 'tg_id', ignoreDuplicates: true }));
+  if (chatId) ok(await sb.from('debt_members').update({ chat_id: chatId }).eq('tg_id', id));
 }
 
 /* ---------- долги ---------- */

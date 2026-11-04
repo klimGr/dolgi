@@ -45,6 +45,11 @@ async function postgrest(req: Request) {
     tables[table] = rows.filter(r => !gone.has(r));
     return reply([]);
   }
+  if (req.method === 'PATCH') {
+    const patch = await req.json();
+    for (const r of filterRows(rows, url.searchParams)) Object.assign(r, patch);
+    return reply([]);
+  }
   // POST: insert / upsert
   const body = await req.json();
   const list: Row[] = Array.isArray(body) ? body : [body];

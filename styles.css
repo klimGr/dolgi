@@ -19,9 +19,9 @@
   --pop-bg: rgba(30, 30, 32, .94);
   --pop-fg: #FFFFFF;
 
-  /* цвета долгов — проверенная на дальтонизм палитра, порядок не менять */
-  --c1: #2a78d6; --c2: #eb6834; --c3: #1baf7a; --c4: #eda100;
-  --c5: #e87ba4; --c6: #008300; --c7: #6250d6; --c8: #e34948;
+  /* цвета долгов, порядок не менять: под банки 1 — ВТБ (тёмно-синий), 4 — Т-Банк (жёлтый), 7 — Яндекс (фиолетовый), 8 — Альфа (красный) */
+  --c1: #1f45b8; --c2: #eb6834; --c3: #1baf7a; --c4: #f2c200;
+  --c5: #e87ba4; --c6: #008300; --c7: #6250d6; --c8: #e3342a;
   --on-c: #FFFFFF; --on-c4: #0b0b0b;
   color-scheme: light;
 }
@@ -44,9 +44,9 @@
     --orange: #FF9F0A;
     --scrim: rgba(0, 0, 0, .6);
     --pop-bg: rgba(58, 58, 60, .96);
-    --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500;
-    --c5: #d55181; --c6: #008300; --c7: #9085e9; --c8: #e66767;
-    --on-c4: #FFFFFF;
+    --c1: #2f5ae0; --c2: #d95926; --c3: #199e70; --c4: #ffd52e;
+    --c5: #d55181; --c6: #008300; --c7: #9085e9; --c8: #f0443a;
+    --on-c4: #111111;
     color-scheme: dark;
   }
 }
@@ -68,9 +68,9 @@
   --orange: #FF9F0A;
   --scrim: rgba(0, 0, 0, .6);
   --pop-bg: rgba(58, 58, 60, .96);
-  --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500;
-  --c5: #d55181; --c6: #008300; --c7: #9085e9; --c8: #e66767;
-  --on-c4: #FFFFFF;
+  --c1: #2f5ae0; --c2: #d95926; --c3: #199e70; --c4: #ffd52e;
+  --c5: #d55181; --c6: #008300; --c7: #9085e9; --c8: #f0443a;
+  --on-c4: #111111;
   color-scheme: dark;
 }
 
@@ -155,6 +155,7 @@ body.sub #app { padding-bottom: calc(32px + env(safe-area-inset-bottom)); }
 .scale.lg .seg:active { opacity: .8; }
 .scale-paid:first-child:last-child { padding: 0; }
 .scale [data-fit="no"] > span { visibility: hidden; }
+.seg .who { font-style: normal; font-weight: 700; opacity: .7; margin-right: 4px; }
 .scale-axis {
   display: flex; justify-content: space-between; margin-top: 6px;
   font-size: 11px; color: var(--text2); font-variant-numeric: tabular-nums;
@@ -306,6 +307,24 @@ button.row:active { background: var(--fill); }
 .tab { flex: 1; max-width: 180px; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 7px 0 6px; font-size: 10px; font-weight: 500; color: var(--tab-off); }
 .tab svg { width: 26px; height: 26px; }
 .tab.active { color: var(--accent); }
+.tab { position: relative; }
+.tab .badge {
+  position: absolute; top: 3px; left: calc(50% + 6px); min-width: 17px; height: 17px; padding: 0 5px;
+  border-radius: 9px; background: var(--red); color: #fff; font-size: 11px; font-weight: 600; line-height: 17px; text-align: center;
+}
+
+/* ---------- важное ---------- */
+.insight { display: flex; gap: 12px; align-items: flex-start; }
+.insight .ico { flex: none; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: rgba(0, 122, 255, .14); color: var(--accent); }
+.insight.alert .ico { background: rgba(255, 69, 58, .16); color: var(--red); }
+.insight-main { flex: 1; min-width: 0; }
+.insight-title { font-size: 16px; font-weight: 600; margin-top: 7px; }
+.insight p { font-size: 14px; line-height: 1.4; color: var(--text2); margin-top: 4px; }
+.insight-rows { margin-top: 8px; }
+.insight-rows button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 0; border-top: .5px solid var(--sep); font-size: 15px; }
+.insight-rows .n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.insight-rows .v { flex: none; color: var(--text2); font-variant-numeric: tabular-nums; }
+.insight .chip { margin-top: 10px; }
 
 /* ---------- экран долга ---------- */
 .debt-head { padding: 12px 4px 14px; }

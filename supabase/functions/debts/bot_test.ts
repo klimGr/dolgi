@@ -45,3 +45,18 @@ Deno.test('напоминание за 2 дня, без повторов, и о�
   assert(Number(tables.debts.find(x => x.id === d.id)!.balance) === 38750, 'двойное списание');
   assert(telegramCalls.some(c => c.method === 'answerCallbackQuery' && String(c.body.text).includes('уже')), 'нет ответа «уже отмечено»');
 });
+
+Deno.test('карта без минимального платежа: кнопка не списывает весь долг, а спрашивает сумму', async () => {
+  const t = today('Europe/Moscow');
+  const d = await svc.createDebt({ name: 'Альфа Лера', kind: 'card', owner: '43', balance: 163904, nextPayment: addDays(t, 2) });
+  telegramCalls.length = 0;
+  await runReminders();
+  const msg = telegramCalls.find(c => c.method === 'sendMessage' && String(c.body.text).includes('Альфа Лера'))!.body;
+  assert(String(msg.text).includes('сумма не указана') && !String(msg.text).includes('163 904 ₽</b>'), 'текст: ' + msg.text);
+  const btn = (msg.reply_markup as { inline_keyboard: { text: string; callback_data?: string }[][] }).inline_keyboard[0][0];
+  assert(btn.callback_data === `other:${d.id}` && btn.text.includes('указать сумму'), 'кнопка: ' + JSON.stringify(btn));
+
+  // Старая кнопка «pay:» из прошлого напоминания тоже ничего не списывает
+  await handleUpdate({ update_id: 9, callback_query: { id: 'cb9', from: { id: 43, first_name: 'Маша' }, data: `pay:${d.id}:${addDays(t, 2)}`, message: { message_id: 12, chat: { id: 43 } } } });
+  assert(Number(tables.debts.find(x => x.id === d.id)!.balance) === 163904, 'весь долг списан одной кнопкой');
+});

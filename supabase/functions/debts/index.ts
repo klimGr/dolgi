@@ -3,13 +3,14 @@
 //   POST /debts/cron    — ежедневные напоминания (pg_cron, заголовок x-cron-key)
 //   GET  /debts/setup?key=… — подключить вебхук, меню и команды бота (один раз после деплоя)
 //   GET  /debts/ai-check — проверить ключ ИИ и подобрать модель
+//   GET  /debts/avatar?key=… — поставить боту аватарку avatar.jpg с сайта мини-приложения
 //   POST /debts         — API мини-приложения
 import { handleApi } from './api.ts';
 import { handleUpdate, type TgUpdate } from './bot.ts';
 import { APP_URL, BOT_TOKEN, GEMINI_API_KEY, SECRET, SUPABASE_URL } from './config.ts';
 import { isServiceKey } from './db.ts';
 import { runReminders } from './reminders.ts';
-import { tg } from './telegram.ts';
+import { tg, tgUpload } from './telegram.ts';
 
 declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void } | undefined;
 
@@ -52,6 +53,16 @@ async function setup() {
   return { ok: true, bot: `@${me.username}`, webhook: `${base}/webhook`, app: APP_URL || 'DEBTS_APP_URL не задан — кнопки приложения не будет' };
 }
 
+// Аватарка лежит рядом с мини-приложением (avatar.jpg в корне репозитория), бот ставит её себе сам
+async function setAvatar() {
+  if (!APP_URL) throw new Error('DEBTS_APP_URL не задан — неоткуда взять avatar.jpg');
+  const res = await fetch(new URL('avatar.jpg', APP_URL.endsWith('/') ? APP_URL : APP_URL + '/'));
+  if (!res.ok) throw new Error(`avatar.jpg: ${res.status}`);
+  const photo = new Blob([await res.arrayBuffer()], { type: 'image/jpeg' });
+  await tgUpload('setMyProfilePhoto', { photo: { type: 'static', photo: 'attach://avatar' } }, { avatar: photo });
+  return { ok: true, size: photo.size };
+}
+
 Deno.serve(async req => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   const url = new URL(req.url);
@@ -70,6 +81,11 @@ Deno.serve(async req => {
     if (route === 'cron') {
       if (!(await isServiceKey(req.headers.get('x-cron-key') || url.searchParams.get('key'), SECRET))) return json({ error: 'forbidden' }, 403);
       return json(await runReminders());
+    }
+
+    if (route === 'avatar') {
+      if (!(await isServiceKey(url.searchParams.get('key') || req.headers.get('x-cron-key'), SECRET))) return json({ error: 'forbidden' }, 403);
+      return json(await setAvatar());
     }
 
     if (route === 'setup') {

@@ -177,7 +177,7 @@ export async function runTool(name: string, raw: unknown, ctx: Ctx): Promise<{ c
 /* ---------- контекст ---------- */
 function brief(d: Debt, today: string) {
   const due = nextDue(d, today);
-  const months = payoffMonths(d);
+  const months = payoffMonths(d, today);
   return {
     id: d.id,
     name: d.name,

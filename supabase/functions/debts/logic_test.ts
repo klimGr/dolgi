@@ -88,4 +88,9 @@ Deno.test('сводка и прогноз', () => {
   eq(payoffMonths(debt({ minPayment: null })), null);
   eq(payoffMonths(list[0]), 23, '80 000 под 36 % по 5 000');
   eq(freeBy(list, '2026-11-02').month, '2028-10');
+  // Кредит по графику: ставка 81 % «никогда» не гасится платежом 3 452 ₽, но по договору закроется в июне 2028
+  const yandex = debt({ kind: 'loan', balance: 49774, start: 50000, rate: 81.4, minPayment: 3452, endDate: '2028-06-17' });
+  eq(payoffMonths(yandex, '2026-11-04'), 19, 'по дате окончания');
+  eq(payoffMonths({ ...yandex, kind: 'card' }, '2026-11-04') === 19, false, 'для карты дата окончания не важна');
+  eq(payoffMonths({ ...yandex, endDate: '2026-11-29', kind: 'microloan' }, '2026-11-04'), 1, 'займ в этом месяце — 1 месяц');
 });
