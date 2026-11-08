@@ -21,7 +21,7 @@ export const SYSTEM = `Ты — помощник семейной пары по 
 Сообщения про деньги: «заплатил 5000 по Тинькофф» — платёж; «по карте сейчас 48 300» — новый остаток; «потратила 3000 с кредитки» — долг вырос. Если непонятно, о каком долге речь или какая сумма, — переспроси, а не угадывай. Удалять долги ты не можешь — для этого есть приложение.
 
 Точность важнее скорости:
-• Числа бери только из контекста и ответов инструментов, в уме не считай. Строка «К оплате» в контексте уже посчитана.
+• Числа бери только из контекста и ответов инструментов, в уме не считай. Строка «К оплате» в контексте уже посчитана; «до конца месяца» и «30 дней» — разные суммы.
 • next_due — следующий срок, covered_until — до какой даты обязательный платёж уже закрыт. Не говори, что месяц оплачен, если этого не видно из этих полей.
 • Один реальный платёж — одна запись. Перед записью посмотри «Последние записи».
 • Сверяй перед записью, но без пустых вопросов. Долг определяй сам: если у того, кто пишет, один долг этого банка, это он. Переспрашивай только когда есть два реальных варианта, нет суммы или цифры спорят с данными, и спрашивай конкретно, с числами. Никаких «вы уверены?».
@@ -485,12 +485,13 @@ const WEEKDAYS = ['воскресенье', 'понедельник', 'втор�
 function dueSummary(debts: Debt[], today: string) {
   const items = debts.filter(isOpen).flatMap(d => {
     const due = nextDue(d, today);
-    return due ? [{ d, days: daysBetween(today, due), sum: dueKnown(d) ? dueAmount(d, due) : null }] : [];
+    return due ? [{ d, due, days: daysBetween(today, due), sum: dueKnown(d) ? dueAmount(d, due) : null }] : [];
   });
-  const within = (n: number) => moneyExact(round2(items.filter(x => x.days <= n).reduce((s, x) => s + (x.sum ?? 0), 0)));
+  const total = (list: typeof items) => moneyExact(round2(list.reduce((s, x) => s + (x.sum ?? 0), 0)));
+  const within = (n: number) => total(items.filter(x => x.days <= n));
   const late = items.filter(x => x.days < 0).map(x => x.d.name);
   const noSum = items.filter(x => x.sum === null).map(x => x.d.name);
-  return `К оплате: в ближайшие 7 дней ${within(7)}, в ближайшие 30 дней ${within(30)}.`
+  return `К оплате: в ближайшие 7 дней ${within(7)}, до конца этого месяца ${total(items.filter(x => x.due.slice(0, 7) <= today.slice(0, 7)))}, в ближайшие 30 дней ${within(30)}.`
     + (late.length ? ` Просрочено: ${late.join(', ')}.` : '')
     + (noSum.length ? ` Сумма платежа неизвестна и не учтена: ${noSum.join(', ')}.` : '');
 }
@@ -641,6 +642,11 @@ export async function chat(opts: { chatId: number; me: { id: string; name: strin
       reply = await (await load(list[i]))(args);
       break;
     } catch (e) {
+      // Запись или вопрос уже готовы: человеку всё покажет код, а текст модели здесь необязателен
+      if (ctx.asks.length || ctx.log.length) {
+        console.error('ai failed after tools', list[i], e instanceof Error ? e.message.slice(0, 300) : e);
+        break;
+      }
       // Переходим к следующему ИИ, только если этот ещё ничего не успел изменить — иначе можно задвоить запись
       const last = i === list.length - 1;
       if (!(e instanceof AiError) || e.kind === 'bad' || ctx.changed || last) throw e;

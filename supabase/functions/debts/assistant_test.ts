@@ -149,6 +149,19 @@ Deno.test({ name: 'Бот: обычное сообщение записывае�
   assert(small.changed && Number(tables.debts.find(x => x.id === big.id)!.balance) === 19000, 'обычная правка: ' + small.reply);
 });
 
+Deno.test({ name: 'Бот: модель отказала после вопроса или записи — человек всё равно получает итог', ...opts }, async () => {
+  setup();
+  const d = await card();
+  const down = { status: 503, body: '{"error":{"status":"UNAVAILABLE"}}' };
+  geminiScript.push(call('record_payment', { debt_id: d.id, amount: 3700 }), down);
+  const paid = await send(30, 'заплатил 3700');
+  assert(paid.changed && flat(paid.reply).includes('платёж 3 700'), 'запись: ' + paid.reply);
+
+  geminiScript.push(call('record_payment', { debt_id: d.id, amount: 3700 }), down);
+  const asked = await send(30, 'заплатил 3700');
+  assert(!asked.changed && flat(asked.reply).includes('уже записан') && tables.debt_events.length === 1, 'вопрос: ' + asked.reply);
+});
+
 Deno.test({ name: 'Бот: в контексте есть готовые цифры для наблюдений', ...opts }, async () => {
   setup();
   await svc.createDebt({ name: 'Яндекс', kind: 'loan', balance: 50000, rate: 80, minPayment: 3000, payDay: 17 });
