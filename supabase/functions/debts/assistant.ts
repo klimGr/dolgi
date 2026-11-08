@@ -565,13 +565,15 @@ function providers(): Provider[] {
 
 // Метка в сохранённой переписке: что бот предложил внести. Человек её не видит, подделать её своим сообщением нельзя
 const ASKED = /⟦ask:([^⟧]*)⟧/g;
-interface Pending { keys: string[]; calls: { name: string; input: Input }[]; files: DebtFile[] }
+interface Pending { keys: string[]; calls: { name: string; input: Input }[]; files: DebtFile[]; at: number }
+const PENDING_TTL = 24 * 3600e3; // вчерашнее «да» к сегодняшним цифрам не относится
 
 function readPending(text: string): Pending | null {
   const found = [...text.matchAll(ASKED)][0];
   if (!found) return null;
   try {
-    return JSON.parse(found[1]) as Pending;
+    const pending = JSON.parse(found[1]) as Pending;
+    return Date.now() - pending.at < PENDING_TTL ? pending : null;
   } catch {
     return null;
   }
@@ -581,7 +583,7 @@ const uniqueAsks = (ctx: Ctx) => [...new Map(ctx.asks.map(a => [a.key, a])).valu
 const pendingMark = (ctx: Ctx) => {
   const asks = uniqueAsks(ctx);
   if (!asks.length) return '';
-  const data: Pending = { keys: asks.map(a => a.key), calls: asks.map(a => a.call), files: ctx.files };
+  const data: Pending = { keys: asks.map(a => a.key), calls: asks.map(a => a.call), files: ctx.files, at: Date.now() };
   return `⟦ask:${JSON.stringify(data).replaceAll('⟧', '')}⟧`;
 };
 

@@ -3,7 +3,7 @@
 // Страница — сначала из сети (чтобы новая версия приходила сразу), без сети — из кэша.
 // Файлы с ?v= неизменны — сразу из кэша. Скрипт Telegram — из кэша, а в фоне обновляем.
 // Запросы к серверу (Supabase) сюда не попадают: их не кэшируем.
-const VERSION = '20261111'; // менять вместе с ?v= в index.html
+const VERSION = '20261112'; // менять вместе с ?v= в index.html
 const CACHE = `dolgi-${VERSION}`;
 const PAGE = './';
 const TG_JS = 'https://telegram.org/js/telegram-web-app.js';

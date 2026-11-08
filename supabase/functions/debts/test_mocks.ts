@@ -56,6 +56,9 @@ async function postgrest(req: Request) {
   const keys = (url.searchParams.get('on_conflict') || '').split(',').filter(Boolean);
   const inserted: Row[] = [];
   for (const item of list) {
+    if (!keys.length && item.id !== undefined && rows.some(r => r.id === item.id)) {
+      return reply({ message: 'duplicate key value violates unique constraint' }, 409);
+    }
     const found = keys.length ? rows.find(r => keys.every(k => String(r[k]) === String(item[k]))) : undefined;
     if (found) {
       if (!prefer.includes('ignore-duplicates')) Object.assign(found, item);

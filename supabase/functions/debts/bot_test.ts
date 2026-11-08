@@ -46,6 +46,15 @@ Deno.test('напоминание за 2 дня, без повторов, и о�
   assert(telegramCalls.some(c => c.method === 'answerCallbackQuery' && String(c.body.text).includes('уже')), 'нет ответа «уже отмечено»');
 });
 
+Deno.test('два быстрых нажатия «Оплачено» записывают один платёж', async () => {
+  const t = today('Europe/Moscow');
+  const d = await svc.createDebt({ name: 'Двойное нажатие', kind: 'card', owner: '42', balance: 10000, minPayment: 1000, nextPayment: addDays(t, 2) });
+  const press = (n: number) => handleUpdate({ update_id: 100 + n, callback_query: { id: `dbl${n}`, from: { id: 42, first_name: 'Клим' }, data: `pay:${d.id}:${addDays(t, 2)}`, message: { message_id: 20 + n, chat: { id: 42 } } } });
+  await Promise.all([press(1), press(2)]);
+  assert(Number(tables.debts.find(x => x.id === d.id)!.balance) === 9000, 'списали один раз: ' + tables.debts.find(x => x.id === d.id)!.balance);
+  assert((tables.debt_events ?? []).filter(e => e.debt_id === d.id).length === 1, 'одна запись');
+});
+
 Deno.test('карта без минимального платежа: кнопка не списывает весь долг, а спрашивает сумму', async () => {
   const t = today('Europe/Moscow');
   const d = await svc.createDebt({ name: 'Альфа Лера', kind: 'card', owner: '43', balance: 163904, nextPayment: addDays(t, 2) });

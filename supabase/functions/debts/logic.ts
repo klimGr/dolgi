@@ -232,7 +232,8 @@ export const pctLeft = (balance: number, start: number) => (start > 0 ? Math.min
 export function totals(list: Debt[]) {
   const start = list.reduce((s, d) => s + Math.max(d.start, d.balance), 0);
   const balance = list.reduce((s, d) => s + d.balance, 0);
-  const monthly = list.filter(isOpen).reduce((s, d) => s + Math.min(d.minPayment || 0, d.balance), 0);
+  // Займ МФО возвращают один раз, это не ежемесячный платёж
+  const monthly = list.filter(d => isOpen(d) && d.kind !== 'microloan').reduce((s, d) => s + Math.min(d.minPayment || 0, d.balance), 0);
   return { start, balance, paid: start - balance, pct: pctLeft(balance, start), monthly };
 }
 

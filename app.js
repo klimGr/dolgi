@@ -69,18 +69,19 @@ const pctText = x => {
   const p = x * 100;
   return p > 0 && p < 1 ? '<1' : nf0.format(Math.round(p));
 };
-const parseNum = v => {
+const parseNum = (v, digits = 2) => {
   const s = String(v ?? '').replace(/\s/g, '').replace(',', '.');
   if (!s) return null;
   const n = parseFloat(s);
-  return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : null;
+  const k = 10 ** digits;
+  return Number.isFinite(n) && n >= 0 ? Math.round(n * k) / k : null;
 };
-// «412000» → «412 000» для полей ввода; parseNum понимает такую запись
-function groupNum(v) {
+// «412000» → «412 000» для полей ввода; parseNum понимает такую запись. Ставка бывает с тремя знаками: 81,406
+function groupNum(v, digits = 2) {
   const s = String(v ?? '').replace(/[^\d.,]/g, '').replace(/\./g, ',');
   const i = s.indexOf(',');
   const int = (i < 0 ? s : s.slice(0, i)).replace(/^0+(?=\d)/, '');
-  const frac = i < 0 ? '' : ',' + s.slice(i + 1).replace(/,/g, '').slice(0, 2);
+  const frac = i < 0 ? '' : ',' + s.slice(i + 1).replace(/,/g, '').slice(0, digits);
   return int.replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0') + frac;
 }
 const pad = n => String(n).padStart(2, '0');
@@ -197,7 +198,8 @@ const pctLeft = (balance, start) => (start > 0 ? Math.min(1, balance / start) : 
 function totals(list) {
   const start = list.reduce((s, d) => s + Math.max(d.start, d.balance), 0);
   const balance = list.reduce((s, d) => s + d.balance, 0);
-  const monthly = list.filter(isOpen).reduce((s, d) => s + Math.min(d.minPayment || 0, d.balance), 0);
+  // Займ МФО возвращают один раз, это не ежемесячный платёж
+  const monthly = list.filter(d => isOpen(d) && d.kind !== 'microloan').reduce((s, d) => s + Math.min(d.minPayment || 0, d.balance), 0);
   return { start, balance, paid: start - balance, pct: pctLeft(balance, start), monthly };
 }
 const monthsTo = (from, to) => (Number(to.slice(0, 4)) - Number(from.slice(0, 4))) * 12 + Number(to.slice(5, 7)) - Number(from.slice(5, 7));
@@ -1454,7 +1456,7 @@ function renderEdit({ id }) {
       <div class="list">
         ${moneyField('Платёж в месяц', 'minPayment', d?.minPayment, 'минимальный')}
         ${field('Ближайший', `<input name="nextPayment" type="date" value="${esc(next || '')}">`)}
-        ${field('Ставка', `<input name="rate" inputmode="decimal" placeholder="0" value="${groupNum(d?.rate)}"><em>%</em>`, 'num')}
+        ${field('Ставка', `<input name="rate" inputmode="decimal" placeholder="0" value="${groupNum(d?.rate, 3)}"><em>%</em>`, 'num')}
         ${field('Окончание', `<input name="endDate" type="date" value="${esc(d?.endDate || '')}">`)}
         ${field('День выписки', `<input name="statementDay" inputmode="numeric" maxlength="2" placeholder="1–31" value="${d?.statementDay ?? ''}"><em>число</em>`, 'num only-card')}
       </div>
@@ -1537,7 +1539,7 @@ function saveEdit(form) {
     start: parseNum(fd.get('start')),
     limit: parseNum(fd.get('limit')),
     minPayment: parseNum(fd.get('minPayment')),
-    rate: parseNum(fd.get('rate')),
+    rate: parseNum(fd.get('rate'), 3),
     principal: parseNum(fd.get('principal')),
     statementDay: parseInt(fd.get('statementDay'), 10) || null,
     nextPayment: fd.get('nextPayment') || null,
@@ -1720,7 +1722,7 @@ document.addEventListener('input', e => {
   if (!(el instanceof HTMLInputElement) || el.inputMode !== 'decimal') return;
   const pos = el.selectionStart ?? el.value.length;
   const before = el.value.slice(0, pos).replace(/[^\d.,]/g, '').length;
-  const next = groupNum(el.value);
+  const next = groupNum(el.value, el.name === 'rate' ? 3 : 2);
   if (next === el.value) return;
   el.value = next;
   let i = 0;

@@ -4,7 +4,7 @@ import { addDays, type Debt, dueAmount, dueKnown, dueOnOrAfter, isOpen, lumpSum,
 
 const MONTHS_AHEAD = 6;
 
-const escapeText = (s: string) => s.replace(/\\/g, '\\\\').replace(/;/g, '\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+const escapeText = (s: string) => s.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
 const dayValue = (date: string) => date.replaceAll('-', '');
 
 /** По стандарту строка не длиннее 75 байт; режем только между символами UTF-8 */

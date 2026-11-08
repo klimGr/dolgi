@@ -81,6 +81,10 @@ Deno.test('план погашения: лавина не дороже снеж�
   eq(monthlyMin(debt({ minPayment: null, balance: 1000 })), 50, 'неизвестный минимум');
 });
 
+Deno.test('обязательно в месяц: разовый возврат займа не считается', () => {
+  eq(totals([debt({ kind: 'microloan', balance: 12000, minPayment: 14812 }), debt({ balance: 5000, minPayment: 1000 })]).monthly, 1000);
+});
+
 Deno.test('похожие платежи ищем в окне трёх дней и только по этому долгу', () => {
   const pay = (id: string, debtId: string, date: string, type: DebtEvent['type'] = 'payment') =>
     ({ id, debtId, type, amount: 100, delta: -100, date, by: '', note: '', dueBefore: null, dueAfter: null, createdAt: '' });

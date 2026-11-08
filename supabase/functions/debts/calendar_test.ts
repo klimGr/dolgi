@@ -14,6 +14,11 @@ const now = new Date('2026-11-08T07:00:00Z');
 const unfold = (s: string) => s.replace(/\r\n /g, '');
 const events = (s: string) => s.split('BEGIN:VEVENT').length - 1;
 
+Deno.test('календарь: запятая и точка с запятой экранируются', () => {
+  const text = unfold(calendarText([{ ...base, name: 'Втб; карта, Клим' }], '2026-11-08', now));
+  assert(text.includes('Втб\\; карта\\, Клим'), 'экранирование: ' + text.slice(0, 600));
+});
+
 Deno.test('календарь: формат, полгода платежей, длинные строки', () => {
   const long = 'Очень длинное название кредитной карты чтобы строка точно не поместилась в семьдесят пять байт';
   const text = calendarText([base, { ...base, id: 'd2', name: long }], '2026-11-08', now);

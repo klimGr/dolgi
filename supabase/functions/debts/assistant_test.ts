@@ -162,6 +162,29 @@ Deno.test({ name: 'Бот: модель отказала после вопрос
   assert(!asked.changed && flat(asked.reply).includes('уже записан') && tables.debt_events.length === 1, 'вопрос: ' + asked.reply);
 });
 
+Deno.test({ name: 'Бот: «да» на вчерашний вопрос ничего не вносит', ...opts }, async () => {
+  setup();
+  const d = await card();
+  geminiScript.push(call('set_balance', { debt_id: d.id, balance: 70000 }), say('Ок'));
+  await chat({ chatId: 31, me, text: '', attachments: photo });
+  const last = tables.debt_chat.at(-1)!;
+  last.text = String(last.text).replace(/"at":\d+/, '"at":1');
+  geminiScript.push(say('О чём именно речь?'));
+  const r = await send(31, 'да');
+  assert(!r.changed && Number(tables.debts[0].balance) === 80000 && r.reply === 'О чём именно речь?', 'ответ: ' + r.reply);
+});
+
+Deno.test({ name: 'Правка долга: день платежа 30-го и ставка с тремя знаками не портятся', ...opts }, async () => {
+  setup();
+  const d = await svc.createDebt({ name: 'Альфа', kind: 'card', balance: 1000, minPayment: 100, rate: 81.406, payDay: 30 });
+  assert(Number(tables.debts[0].rate) === 81.406, 'ставка при создании: ' + tables.debts[0].rate);
+  tables.debts[0].paid_due = '2027-01-30'; // следующий срок — 28 февраля
+  await svc.updateDebt(d.id, { nextPayment: '2027-02-28', notes: 'заметка' }, 'Клим');
+  assert(tables.debts[0].pay_day === 30 && tables.debts[0].paid_due === '2027-01-30', 'график: ' + JSON.stringify(tables.debts[0]));
+  await svc.updateDebt(d.id, { nextPayment: '2027-03-10' }, 'Клим');
+  assert(tables.debts[0].pay_day === 10, 'новая дата меняет график');
+});
+
 Deno.test({ name: 'Бот: в контексте есть готовые цифры для наблюдений', ...opts }, async () => {
   setup();
   await svc.createDebt({ name: 'Яндекс', kind: 'loan', balance: 50000, rate: 80, minPayment: 3000, payDay: 17 });

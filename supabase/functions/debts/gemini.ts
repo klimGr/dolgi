@@ -67,6 +67,7 @@ async function generate(contents: Content[]): Promise<GeminiResponse> {
   const key = GEMINI_API_KEY();
   // Посреди работы с инструментами модель не меняем: в истории её подписи размышлений, другая их не примет
   const midTask = contents.some(c => c.parts.some(p => p.functionCall || p.thoughtSignature));
+  let worst: { status: number; text: string } | null = null;
   for (let attempt = 0; ; attempt++) {
     const { model, way } = await working();
     const [url, init] = request(model, key, way, {
@@ -83,9 +84,16 @@ async function generate(contents: Content[]): Promise<GeminiResponse> {
       throw new AiError('down', String(e));
     }
     if (res.ok) return await res.json();
-    const err = errorFor(res.status, await res.text());
-    // Лимит этой модели кончился или её убрали — на время откладываем её и берём следующую из списка
-    if ((res.status === 429 || res.status === 404) && !GEMINI_MODEL()) {
+    const text = await res.text();
+    if (!worst || RANK(res.status) < RANK(worst.status)) worst = { status: res.status, text };
+    // Новый ключ не приняли: выясняем пробными запросами, куда и как его передавать
+    if ((res.status === 401 || res.status === 403) && isNewKey(key) && !needProbe) {
+      needProbe = true;
+      found = null;
+      if (!midTask) continue;
+    }
+    // Лимит кончился, модель перегружена или её убрали — на время откладываем её и берём следующую из списка
+    if ([404, 429, 503].includes(res.status) && !GEMINI_MODEL()) {
       tired.set(model, Date.now() + (res.status === 404 ? 24 * 3600e3 : 15 * 60e3));
       found = null;
       if (!midTask && attempt < 2) {
@@ -93,7 +101,7 @@ async function generate(contents: Content[]): Promise<GeminiResponse> {
         continue;
       }
     }
-    throw err;
+    throw errorFor(worst.status, worst.text);
   }
 }
 
@@ -154,9 +162,12 @@ export async function runGemini({ history, context, attachments, userText, ctx }
 let found: { model: string; way: Way } | null = null;
 /** Модели, у которых кончился лимит или которых нет: до какого времени их не пробуем */
 const tired = new Map<string, number>();
+/** Пробный запрос тратит бесплатную квоту, а функция засыпает через минуту. Поэтому пробуем только если ключ не приняли */
+let needProbe = false;
 /** Для тестов: забыть найденную модель */
 export const forgetChoice = () => {
   found = null;
+  needProbe = false;
   tired.clear();
 };
 
@@ -170,6 +181,7 @@ async function working() {
   if (GEMINI_MODEL() && !isNewKey(GEMINI_API_KEY())) return { model: GEMINI_MODEL(), way: waysFor(GEMINI_API_KEY())[0] };
   const fresh = MODEL_CANDIDATES.filter(m => (tired.get(m) ?? 0) < Date.now());
   const models = GEMINI_MODEL() ? [GEMINI_MODEL()] : fresh.length ? fresh : MODEL_CANDIDATES;
+  if (!needProbe) return { model: models[0], way: waysFor(GEMINI_API_KEY())[0] };
   const check = await checkGemini(models);
   const ok = check.results.find(r => r.status === 200);
   if (!ok) {
@@ -197,7 +209,7 @@ export async function checkGemini(models: string[]) {
     let message = '';
     try {
       const [url, init] = request(model, key, way, probe);
-      const res = await fetch(url, { ...init, signal: AbortSignal.timeout(30_000) });
+      const res = await fetch(url, { ...init, signal: AbortSignal.timeout(12_000) });
       status = res.status;
       const body = await res.text();
       if (res.ok) {

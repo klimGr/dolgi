@@ -219,7 +219,15 @@ async function onCallback(q: TgCallback) {
     // Заём одной суммой платят по сегодняшнему остатку, а не по прогнозу к сроку
     const sum = lumpSum(d) ? amountOn(d, t) : dueAmount(d);
     const by = userName(q.from);
-    const r = await svc.pay(d.id, sum, t, by, 'Отмечено из напоминания');
+    // Номер записи привязан к сроку: второе быстрое нажатие база не примет и платёж не задвоится
+    const eventId = `rem${d.id}${String(due).replaceAll('-', '')}`;
+    let r: Awaited<ReturnType<typeof svc.pay>>;
+    try {
+      r = await svc.pay(d.id, sum, t, by, 'Отмечено из напоминания', eventId);
+    } catch (e) {
+      console.error('callback pay', e);
+      return answer(/duplicate key/i.test(String(e)) ? 'Этот платёж уже отмечен' : 'Не получилось записать, попробуйте ещё раз');
+    }
     await answer('Записал платёж ✅');
     const next = nextDue(r.debt, t);
     const html = [

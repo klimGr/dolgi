@@ -2,7 +2,7 @@
 import { ALLOWED, TZ } from './config.ts';
 import * as db from './db.ts';
 import {
-  accrue, applyBalance, applyPayment, type Debt, type DebtFile, type EventType, freeColor, isDate, type Kind, KINDS, revertEvent,
+  accrue, applyBalance, applyPayment, type Debt, type DebtFile, type EventType, freeColor, isDate, type Kind, KINDS, nextDue, revertEvent,
   round2, setSchedule, today, uid,
 } from './logic.ts';
 
@@ -30,11 +30,14 @@ export interface DebtInput {
 }
 
 const text = (v: unknown, max = 120) => String(v ?? '').trim().slice(0, max);
-const amount = (v: unknown): number | null => {
+const amount = (v: unknown, digits = 2): number | null => {
   if (v === null || v === undefined || v === '') return null;
   const n = typeof v === 'number' ? v : Number(String(v).replace(/\s/g, '').replace(',', '.'));
-  return Number.isFinite(n) && n >= 0 ? round2(n) : null;
+  const k = 10 ** digits;
+  return Number.isFinite(n) && n >= 0 ? Math.round(n * k) / k : null;
 };
+// Ставка в договорах бывает с тремя знаками: 81,406 %
+const rateOf = (v: unknown) => amount(v, 3);
 const dayOf = (v: unknown) => {
   const n = Number(v);
   return Number.isInteger(n) && n >= 1 && n <= 31 ? n : null;
@@ -71,7 +74,7 @@ export async function createDebt(input: DebtInput, file?: DebtFile, id?: string)
     start: Math.max(amount(input.start) ?? 0, balance),
     balance,
     limit: amount(input.limit),
-    rate: amount(input.rate),
+    rate: rateOf(input.rate),
     minPayment: amount(input.minPayment),
     payDay: null,
     paidDue: null,
@@ -101,7 +104,7 @@ export async function updateDebt(id: string, input: DebtInput, by: string, file?
   if (has('creditor')) d.creditor = text(input.creditor);
   if (has('color') && colorOf(input.color)) d.color = colorOf(input.color)!;
   if (has('limit')) d.limit = amount(input.limit);
-  if (has('rate')) d.rate = amount(input.rate);
+  if (has('rate')) d.rate = rateOf(input.rate);
   if (has('minPayment')) d.minPayment = amount(input.minPayment);
   if (has('endDate')) d.endDate = isDate(input.endDate) ? input.endDate : null;
   if (has('notes')) d.notes = text(input.notes, 2000);
@@ -111,8 +114,10 @@ export async function updateDebt(id: string, input: DebtInput, by: string, file?
   if (file && !d.files.some(f => f.id === file.id)) d.files = [...d.files, file];
 
   const t = today(TZ);
-  if (has('nextPayment') && isDate(input.nextPayment)) setSchedule(d, t, null, input.nextPayment);
-  else if (has('payDay') && (Number(input.payDay) || null) !== d.payDay) setSchedule(d, t, Number(input.payDay) || null);
+  // Форма присылает дату всегда. Трогаем график, только если её правда поменяли: 28 февраля не должно превращать платёж 30-го в 28-е
+  if (has('nextPayment') && isDate(input.nextPayment)) {
+    if (input.nextPayment !== nextDue(d, t)) setSchedule(d, t, null, input.nextPayment);
+  } else if (has('payDay') && (Number(input.payDay) || null) !== d.payDay) setSchedule(d, t, Number(input.payDay) || null);
 
   // Остаток меняем через событие, чтобы было видно в истории
   const newBalance = has('balance') ? amount(input.balance) : null;

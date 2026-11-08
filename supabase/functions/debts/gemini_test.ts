@@ -83,11 +83,11 @@ Deno.test({ name: 'Gemini: новый ключ AI Studio (AQ.) работает 
   Deno.env.delete('DEBTS_GEMINI_MODEL');
   Deno.env.delete('DEBTS_AI');
   geminiRequests.length = 0;
-  geminiScript.push(reply([{ text: 'ок' }]), reply([{ text: 'Привет!' }]));
+  geminiScript.push(reply([{ text: 'Привет!' }])); // без пробного запроса: он тратил бы бесплатную квоту
   const r = await chat({ chatId: 44, me, text: 'привет', attachments: [] });
   assert(r.reply === 'Привет!', 'ответ: ' + r.reply);
   const q = geminiRequests;
-  assert(q.length === 2 && q.every(x => x.url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:')), 'Gemini API: ' + q.map(x => x.url));
+  assert(q.length === 1 && q.every(x => x.url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:')), 'Gemini API: ' + q.map(x => x.url));
   assert(q.every(x => x.headers.get('x-goog-api-key') === 'AQ.studio-test-key' && !x.url.includes('?key=')), 'ключ в заголовке');
   assert(geminiScript.length === 0, 'не все ответы использованы');
 });
@@ -100,6 +100,7 @@ Deno.test({ name: 'Gemini: ключ Vertex AI (AQ.) — подбор спосо�
   Deno.env.delete('DEBTS_AI');
   geminiRequests.length = 0;
   geminiScript.push(
+    { status: 401, body: '{"error":{"status":"UNAUTHENTICATED","message":"API key not valid"}}' }, // настоящий запрос: ключ не приняли, начинаем пробовать
     { status: 401, body: '{"error":{"status":"UNAUTHENTICATED","message":"API key not valid"}}' }, // Gemini API такой ключ не берёт
     { status: 401, body: '{"error":{"status":"UNAUTHENTICATED","message":"API key not valid"}}' }, // ?key= не подошёл
     { status: 404, body: '{"error":{"status":"NOT_FOUND","message":"model not found"}}' }, // в заголовке: модели нет
@@ -110,7 +111,7 @@ Deno.test({ name: 'Gemini: ключ Vertex AI (AQ.) — подбор спосо�
   const r = await chat({ chatId: 43, me: { id: '43', name: 'Маша' }, text: 'привет', attachments: [] });
   assert(r.reply === 'Привет! Чем помочь?', 'ответ: ' + r.reply);
   assert(geminiRequests[0].url.startsWith('https://generativelanguage.googleapis.com/'), 'сначала Gemini API');
-  const q = geminiRequests.slice(1);
+  const q = geminiRequests.slice(2);
   assert(q.every(x => x.url.startsWith('https://aiplatform.googleapis.com/v1/publishers/google/models/')), 'адрес Vertex: ' + q[0].url);
   assert(q[0].url.includes('/gemini-3.6-flash:') && q[0].url.includes('?key=AQ.vertex-test-key'), 'первая попытка — ключ в адресе: ' + q[0].url);
   assert(q[1].headers.get('x-goog-api-key') === 'AQ.vertex-test-key' && !q[1].url.includes('?key='), 'вторая — в заголовке');
@@ -133,15 +134,15 @@ Deno.test({ name: 'Gemini: у модели кончился лимит — бе�
 
   // 1. Выбранная модель отвечает 429 посреди дня → пробуем следующую и отвечаем ею
   geminiRequests.length = 0;
-  geminiScript.push(reply([{ text: 'ок' }]), quota, reply([{ text: 'ок' }]), reply([{ text: 'Готово!' }]));
+  geminiScript.push(quota, reply([{ text: 'Готово!' }]));
   const r = await chat({ chatId: 45, me, text: 'привет', attachments: [] });
   assert(r.reply === 'Готово!', 'ответ: ' + r.reply);
   const urls = geminiRequests.map(x => x.url.match(/models\/([^:]+):/)![1]);
-  assert(JSON.stringify(urls) === JSON.stringify(['gemini-3.6-flash', 'gemini-3.6-flash', 'gemini-3-flash-preview', 'gemini-3-flash-preview']), 'модели: ' + urls);
+  assert(JSON.stringify(urls) === JSON.stringify(['gemini-3.6-flash', 'gemini-3-flash-preview']), 'модели: ' + urls);
 
   // 2. Никто не ответил: лимит, перегрузка и «модели нет» → ошибка «лимит» (на неё бот переключается на Groq), а не «bad»
   forgetChoice();
-  geminiScript.push(quota, { status: 503, body: '{"error":{"status":"UNAVAILABLE"}}' }, gone, gone);
+  geminiScript.push(quota, { status: 503, body: '{"error":{"status":"UNAVAILABLE"}}' }, gone);
   const e = await chat({ chatId: 45, me, text: 'привет', attachments: [] }).catch(x => x);
   assert(e instanceof AiError && e.kind === 'rate', 'ошибка: ' + e);
   assert(geminiScript.length === 0, 'не все ответы использованы');
