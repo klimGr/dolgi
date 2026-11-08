@@ -727,20 +727,25 @@ function renderHome() {
 // Долг на дату восстанавливаем по истории: от сегодняшнего остатка откатываем всё, что случилось позже.
 // Долги первой недели учёта считаем бывшими всегда, иначе внесение данных выглядело бы как рост;
 // долг, появившийся позже, — ступенька вверх в день появления.
-function debtTrend(list) {
+function trendModel(list) {
   const t = today();
-  if (!list.length) return [];
+  if (!list.length) return null;
   const born = d => (d.createdAt || t).slice(0, 10);
   const setupEnd = addDays(list.map(born).sort()[0], 7);
   const start = list.map(born).filter(x => x <= setupEnd).sort().pop();
-  if (start >= t) return [];
+  if (start >= t) return null;
   const ids = new Set(list.map(d => d.id));
   const events = data.events.filter(e => ids.has(e.debtId));
-  const valueOn = day => list.reduce((sum, d) => {
-    if (born(d) > setupEnd && day < born(d)) return sum;
-    const later = events.filter(e => e.debtId === d.id && e.date > day).reduce((s, e) => s + e.delta, 0);
-    return sum + Math.max(0, d.balance - later);
-  }, 0);
+  const late = d => born(d) > setupEnd;
+  const later = (d, day) => events.filter(e => e.debtId === d.id && e.date > day).reduce((s, e) => s + e.delta, 0);
+  const valueOn = day => list.reduce((sum, d) => (late(d) && day < born(d) ? sum : sum + Math.max(0, d.balance - later(d, day))), 0);
+  return { t, born, late, later, start, events, valueOn };
+}
+
+function debtTrend(list) {
+  const model = trendModel(list);
+  if (!model) return [];
+  const { t, born, start, events, valueOn } = model;
   let dates;
   if (daysBetween(start, t) > 62) {
     dates = [start];
@@ -759,31 +764,282 @@ function debtTrend(list) {
   return dates.map(date => ({ date, value: round2(valueOn(date)) }));
 }
 
-function trendCard(list) {
+function trendHead(list) {
   const pts = debtTrend(list);
-  if (pts.length < 2) return '';
+  if (pts.length < 2) return null;
   const first = pts[0], last = pts[pts.length - 1], diff = last.value - first.value;
   const change = Math.abs(diff) < 1 ? `Без изменений с ${dayMonth(first.date)}`
     : `${diff < 0 ? 'Меньше' : 'Больше'} на ${money(Math.abs(diff))}, чем ${dayMonth(first.date)}`;
+  return { change, label: `Общий долг: ${dayMonth(first.date)} — ${money(first.value)}, сейчас — ${money(last.value)}` };
+}
+
+function trendCard(list) {
+  const head = trendHead(list);
+  if (!head) return '';
   return `
-    <div class="section-head lg"><h2 class="section-title lg">Как меняется долг</h2></div>
-    <div class="card trend">
-      <div class="caption">${change}</div>
-      <div class="trend-plot" data-trend role="img" aria-label="Общий долг: ${dayMonth(first.date)} — ${money(first.value)}, сейчас — ${money(last.value)}"></div>
+    <div class="section-head lg"><h2 class="section-title lg">Как меняется долг</h2><button class="link" data-go="trend">По месяцам</button></div>
+    <div class="card trend tap" data-go="trend">
+      <div class="caption">${head.change}</div>
+      <div class="trend-plot" data-trend="mini" role="img" aria-label="${head.label}"></div>
     </div>`;
 }
 
+/* ---------- как менялся долг: по месяцам ---------- */
+const cap = s => s[0].toUpperCase() + s.slice(1);
+const nextMonth = ym => {
+  const [y, m] = ym.split('-').map(Number);
+  return m === 12 ? `${y + 1}-01` : `${y}-${pad(m + 1)}`;
+};
+
+/** Что происходило в каждом месяце учёта, от старого к новому */
+function monthStats(list) {
+  const model = trendModel(list);
+  if (!model) return [];
+  const { t, born, late, later, start, events, valueOn } = model;
+  const nowYm = t.slice(0, 7), firstYm = start.slice(0, 7);
+  // Записи до начала учёта уже вошли в стартовую сумму — изменением месяца их не считаем
+  const baked = (e, d) => e.date <= (late(d) ? born(d) : start);
+  const out = [];
+  for (let ym = firstYm; ym <= nowYm; ym = nextMonth(ym)) {
+    const [y, mo] = ym.split('-').map(Number);
+    const isFirst = ym === firstYm, ongoing = ym === nowYm;
+    const begin = valueOn(isFirst ? start : addDays(`${ym}-01`, -1));
+    const end = valueOn(ongoing ? t : fromTime(Date.UTC(y, mo, 0)));
+    const row = { ym, ongoing, partial: isFirst && Number(start.slice(8, 10)) > 3, since: isFirst ? start : null, begin, end, change: round2(end - begin), paid: 0, grew: 0, fell: 0, interest: 0, added: 0 };
+    const perDebt = new Map();
+    const of = d => {
+      if (!perDebt.has(d.id)) perDebt.set(d.id, { d, paid: 0, change: 0 });
+      return perDebt.get(d.id);
+    };
+    for (const d of list) {
+      if (!late(d) || born(d).slice(0, 7) !== ym) continue;
+      const value = Math.max(0, d.balance - later(d, born(d)));
+      row.added += value;
+      of(d).change += value;
+    }
+    for (const e of events) {
+      if (e.date.slice(0, 7) !== ym) continue;
+      const d = list.find(x => x.id === e.debtId);
+      const skip = baked(e, d);
+      if (e.type === 'payment') {
+        row.paid += e.amount;
+        of(d).paid += e.amount;
+        if (!skip) of(d).change += e.delta;
+      } else if (!skip) {
+        of(d).change += e.delta;
+        if (e.delta > 0) row.grew += e.delta; else row.fell -= e.delta;
+        if (e.type === 'interest') row.interest += e.delta;
+      }
+    }
+    row.debts = [...perDebt.values()].filter(x => x.paid || Math.abs(x.change) >= 0.5)
+      .sort((a, b) => b.paid - a.paid || Math.abs(b.change) - Math.abs(a.change));
+    out.push(row);
+  }
+  return out;
+}
+
+/** Сводка словами. Считаем только записанные платежи. «Меньше всего» ищем лишь среди полных месяцев:
+ *  текущий ещё идёт, а первый начался не с начала — иначе худшим всегда оказывался бы неполный */
+function trendFacts(months, list) {
+  const mo = m => Number(m.ym.slice(5, 7)) - 1;
+  const repeats = new Set(months.map(mo)).size < months.length;
+  const year = m => (repeats ? ` ${m.ym.slice(0, 4)}` : '');
+  const inM = m => `в\u00a0${MONTHS_IN[mo(m)]}${year(m)}`;
+  const nameM = m => `${MONTHS[mo(m)]}${year(m)}`;
+  const maxBy = (arr, f) => arr.reduce((a, b) => (f(b) > f(a) ? b : a));
+  const why = m => (m.added > 0.5 ? 'появился новый долг'
+    : m.paid === 0 ? (m.interest > 0 ? 'начислялись проценты, а платежей не записано' : 'платежей не записано')
+      : 'платежи не перекрыли проценты и новые траты');
+
+  const lines = [];
+  const withPaid = months.filter(m => m.paid > 0);
+  const full = months.filter(m => !m.ongoing && !m.partial);
+  const falls = months.filter(m => m.change < -0.5);
+  const rises = months.filter(m => m.change > 0.5);
+
+  if (!withPaid.length) {
+    lines.push('Платежей пока не записано. Как только отметите оплату кнопкой «Оплачено» или напишете боту, здесь появится сводка.');
+  } else if (withPaid.length === 1) {
+    const m = withPaid[0];
+    lines.push(`${cap(inM(m))} внесено ${money(m.paid)}${m.ongoing ? ' — месяц ещё идёт' : ''}.`);
+  } else {
+    const best = maxBy(withPaid, m => m.paid);
+    lines.push(`Рекорд по платежам — ${nameM(best)}: ${money(best.paid)}.`);
+    if (full.length >= 2) {
+      const low = maxBy(full, m => -m.paid);
+      if (low.paid < best.paid) lines.push(low.paid > 0 ? `Меньше всего внесено ${inM(low)} — ${money(low.paid)}.` : `${cap(inM(low))} платежей не записано.`);
+    }
+  }
+
+  if (falls.length) {
+    const m = maxBy(falls, x => -x.change);
+    // Если месяц один, поясняем, почему долг снизился меньше, чем внесено
+    const eaten = months.length === 1 && m.paid > 0 && m.grew >= 0.5 && m.fell < 0.5 && m.added < 0.5;
+    if (eaten) lines.push(`${m.grew - m.interest < 0.5 ? 'Проценты добавили' : 'Проценты и новые траты добавили'} ${money(m.grew)}, поэтому долг снизился на ${money(-m.change)}.`);
+    else if (falls.length >= 2) lines.push(`Сильнее всего долг снизился ${inM(m)} — на ${money(-m.change)}.`);
+    else lines.push(`${cap(inM(m))} долг снизился на ${money(-m.change)}.`);
+  }
+  if (rises.length) {
+    const m = maxBy(rises, x => x.change);
+    lines.push(`${cap(inM(m))} долг вырос на ${money(m.change)}: ${why(m)}.`);
+  }
+
+  let streak = 0;
+  for (let i = full.length - 1; i >= 0 && full[i].change < -0.5; i--) streak++;
+  if (streak >= 2) lines.push(`Долг снижается ${streak} ${plural(streak, 'месяц', 'месяца', 'месяцев')} подряд.`);
+
+  const average = arr => arr.reduce((s, x) => s + x, 0) / arr.length;
+  const avgPaid = full.length >= 2 ? average(full.map(m => m.paid)) : null;
+  if (full.length >= 3) {
+    const pace = -average(full.map(m => m.change));
+    if (pace >= 1) {
+      const left = Math.ceil(months[months.length - 1].end / pace);
+      const [y, m] = months[months.length - 1].ym.split('-').map(Number);
+      if (left <= 600) lines.push(`При среднем темпе этих месяцев без долгов ≈ ${byMonth(new Date(Date.UTC(y, m - 1 + left, 1)).toISOString().slice(0, 7))}.`);
+    }
+  }
+
+  const total = months.reduce((s, m) => s + m.paid, 0);
+  const rows = [];
+  if (total > 0) rows.push(['Всего внесено', money(total)]);
+  if (avgPaid !== null) rows.push(['В среднем за месяц', money(avgPaid)]);
+  const owners = new Map();
+  for (const m of months) for (const x of m.debts) if (x.paid) owners.set(x.d.owner, (owners.get(x.d.owner) || 0) + x.paid);
+  if (currentOwner() === 'all' && owners.size >= 2) {
+    for (const [id, sum] of [...owners].sort((a, b) => b[1] - a[1])) rows.push([`По долгам: ${esc(ownerName(id))}`, money(sum)]);
+  }
+  const ids = new Set(list.map(d => d.id));
+  const payments = data.events.filter(e => e.type === 'payment' && ids.has(e.debtId));
+  if (payments.length >= 2) {
+    const top = maxBy(payments, e => e.amount);
+    rows.push(['Самый большой платёж', `${money(top.amount)} · ${esc(findDebt(top.debtId)?.name || '')}`]);
+  }
+  const interest = months.reduce((s, m) => s + m.interest, 0);
+  if (interest >= 0.5) rows.push(['Начислено процентов по займам', money(interest)]);
+  return { lines, rows, partial: months.some(m => m.ongoing || m.partial) && full.length >= 2 };
+}
+
+function monthRow(m) {
+  const tag = m.ongoing ? 'идёт' : m.partial ? `учёт с ${dayMonth(m.since)}` : '';
+  const change = Math.abs(m.change) < 0.5 ? '<b class="month-change">без изменений</b>'
+    : m.change < 0 ? `<b class="month-change minus">−${money(-m.change)}</b>` : `<b class="month-change plus">+${money(m.change)}</b>`;
+  const lines = [
+    ['Долг на начало', money(m.begin)],
+    m.paid ? ['Внесено', `−${money(m.paid)}`] : null,
+    m.interest >= 0.5 ? ['Проценты по займам', `+${money(m.interest)}`] : null,
+    m.grew - m.interest >= 0.5 ? ['Траты и рост по выпискам', `+${money(m.grew - m.interest)}`] : null,
+    m.fell >= 0.5 ? ['Снижение по выпискам', `−${money(m.fell)}`] : null,
+    m.added >= 0.5 ? ['Новые долги', `+${money(m.added)}`] : null,
+    [m.ongoing ? 'Долг сейчас' : 'Долг на конец', money(m.end)],
+  ].filter(Boolean);
+  return `
+    <details class="card month">
+      <summary>
+        <div class="month-main">
+          <div class="month-title">${monthYear(m.ym)}${tag ? ` <span>${tag}</span>` : ''}</div>
+          <div class="month-sub">Внесено ${money(m.paid)}</div>
+        </div>
+        ${change}
+        ${ICON.chevron}
+      </summary>
+      <div class="month-body">
+        ${lines.map(([l, v]) => `<div class="month-line"><span>${l}</span><b class="num">${v}</b></div>`).join('')}
+        ${m.debts.length ? `<div class="month-debts">${m.debts.map(x => `
+          <button data-go="debt" data-id="${x.d.id}">
+            <span class="dot c${x.d.color}"></span><span class="n">${esc(x.d.name)}</span>
+            <span class="v">${x.paid ? `внесено ${money(x.paid)}` : Math.abs(x.change) >= 0.5 ? `${x.change > 0 ? '+' : '−'}${money(Math.abs(x.change))}` : ''}</span>
+          </button>`).join('')}</div>` : ''}
+      </div>
+    </details>`;
+}
+
+function renderTrend() {
+  const list = visibleDebts();
+  const months = monthStats(list);
+  const head = trendHead(list);
+  if (!months.length || !head) return navBar('Как менялся долг') + ownerFilter() + emptyState('Пока рано', 'График появится на второй день учёта.');
+  const facts = trendFacts(months, list);
+  return `
+    ${navBar('Как менялся долг')}
+    ${ownerFilter()}
+    <div class="card trend">
+      <div class="caption">${head.change}</div>
+      <div class="trend-plot" data-trend="full" role="img" aria-label="${head.label}"></div>
+    </div>
+
+    <h2 class="section-title">Сводка</h2>
+    <div class="card story">${facts.lines.map(l => `<p>${esc(l)}</p>`).join('')}</div>
+    ${facts.rows.length ? `<div class="list" style="margin-top:12px">${facts.rows.map(([l, v]) => infoRow(l, v)).join('')}</div>` : ''}
+    <p class="form-hint">Считаем записанные платежи: кнопка «Оплачено», приложение или сообщение боту.${facts.partial ? ' Неполные месяцы в «меньше всего» не участвуют.' : ''}</p>
+
+    ${months.length >= 2 ? `
+      <h2 class="section-title">Внесено по месяцам</h2>
+      <div class="card"><div class="trend-plot bars" data-bars role="img" aria-label="${esc(months.map(m => `${monthYear(m.ym)}: ${money(m.paid)}`).join(', '))}"></div></div>` : ''}
+
+    <h2 class="section-title">По месяцам</h2>
+    ${[...months].reverse().map(monthRow).join('')}`;
+}
+
 function drawTrends(root = app) {
+  drawBars(root);
   const plots = root.querySelectorAll('[data-trend]');
   if (!plots.length) return;
   const pts = debtTrend(visibleDebts());
   for (const el of plots) drawTrend(el, pts);
 }
 
+function drawBars(root = app) {
+  const el = root.querySelector('[data-bars]');
+  const w = el?.clientWidth;
+  if (!w) return;
+  const rows = monthStats(visibleDebts()).slice(-12);
+  const h = 132, top = 22, bottom = 22;
+  const band = w / rows.length, width = Math.min(24, band - 6), base = h - bottom;
+  const best = rows.reduce((a, b) => (b.paid > a.paid ? b : a));
+  const peak = Math.max(best.paid, 1);
+  const short = m => MONTHS_SHORT[Number(m.ym.slice(5, 7)) - 1];
+  const bars = rows.map((m, i) => {
+    const cx = band * (i + .5);
+    const barH = m.paid / peak * (base - top);
+    if (m.paid <= 0) return '';
+    const x0 = cx - width / 2, x1 = cx + width / 2, y = base - barH, r = Math.min(4, barH, width / 2);
+    return `<path class="bar${m === best ? ' best' : ''}" d="M${x0} ${base}V${y + r}Q${x0} ${y} ${x0 + r} ${y}H${x1 - r}Q${x1} ${y} ${x1} ${y + r}V${base}Z"/>`;
+  }).join('');
+  // Подписываем только рекорд и текущий месяц: цифра над каждым столбиком читается хуже
+  const last = rows[rows.length - 1];
+  const value = m => {
+    const cx = band * (rows.indexOf(m) + .5);
+    const y = base - m.paid / peak * (base - top) - 6;
+    const anchor = cx < 36 ? 'start' : cx > w - 36 ? 'end' : 'middle';
+    return `<text class="trend-val" x="${anchor === 'start' ? 0 : anchor === 'end' ? w : cx}" y="${y}" text-anchor="${anchor}">${money(m.paid)}</text>`;
+  };
+  const step = rows.length > 8 ? 2 : 1;
+  el.innerHTML = `
+    <svg viewBox="0 0 ${w} ${h}" aria-hidden="true">
+      <line class="trend-grid" x1="0" x2="${w}" y1="${base + .5}" y2="${base + .5}"/>
+      ${bars}
+      ${best.paid > 0 ? value(best) : ''}
+      ${last !== best && last.paid > 0 && band > 70 ? value(last) : ''}
+      ${rows.map((m, i) => ((rows.length - 1 - i) % step ? '' : `<text class="trend-x" x="${band * (i + .5)}" y="${h - 5}" text-anchor="middle">${short(m)}</text>`)).join('')}
+    </svg>
+    <div class="trend-tip" hidden></div>`;
+  const tipEl = el.querySelector('.trend-tip');
+  let timer;
+  el.onpointerdown = el.onpointermove = e => {
+    clearTimeout(timer);
+    const i = Math.min(rows.length - 1, Math.max(0, Math.floor((e.clientX - el.getBoundingClientRect().left) / band)));
+    tipEl.textContent = `${monthYear(rows[i].ym)} · ${money(rows[i].paid)}`;
+    tipEl.hidden = false;
+    tipEl.style.left = `${Math.min(w - tipEl.offsetWidth / 2, Math.max(tipEl.offsetWidth / 2, band * (i + .5)))}px`;
+  };
+  el.onpointerleave = () => { tipEl.hidden = true; };
+  el.onpointerup = () => { timer = setTimeout(() => { tipEl.hidden = true; }, 1500); };
+}
+
 function drawTrend(el, pts) {
   const w = el.clientWidth;
   if (!w || pts.length < 2) return;
-  const h = 128, top = 26, bottom = 22, side = 6;
+  const h = el.dataset.trend === 'full' ? 176 : 128, top = 26, bottom = 22, side = 6;
   const values = pts.map(p => p.value);
   const max = Math.max(...values), min = Math.min(...values);
   // Запас по высоте, чтобы мелкое изменение большого долга не выглядело обвалом
@@ -807,6 +1063,7 @@ function drawTrend(el, pts) {
       <circle class="trend-focus" r="4" style="display:none"/>
     </svg>
     <div class="trend-tip" hidden></div>`;
+  if (el.dataset.trend === 'mini') return; // на главной тап открывает подробности
   const cross = el.querySelector('.trend-cross'), focus = el.querySelector('.trend-focus'), tipEl = el.querySelector('.trend-tip');
   let timer;
   const hide = () => { cross.style.display = focus.style.display = 'none'; tipEl.hidden = true; };
@@ -1233,7 +1490,7 @@ function renderDenied() {
     </div>`;
 }
 
-const SCREENS = { debt: renderDebt, edit: renderEdit, op: renderOp };
+const SCREENS = { debt: renderDebt, edit: renderEdit, op: renderOp, trend: renderTrend };
 
 /* ---------- сохранение ---------- */
 

@@ -468,6 +468,34 @@ body.swiping #app { position: relative; z-index: 12; background: var(--bg); min-
 .trend-x { fill: var(--text2); font-size: 12px; }
 .trend-tip { position: absolute; top: 0; transform: translateX(-50%); padding: 3px 8px; border-radius: 8px; background: var(--pop-bg); color: var(--pop-fg); font-size: 12px; white-space: nowrap; pointer-events: none; }
 .trend-tip[hidden] { display: none; }
+.trend-plot[data-trend="mini"] { pointer-events: none; }
+.trend-plot[data-trend="full"] svg { height: 176px; }
+.trend-plot.bars svg { height: 132px; }
+.bar { fill: var(--text3); }
+.bar.best { fill: var(--accent); }
+
+.story p { font-size: 16px; line-height: 1.4; }
+.story p + p { margin-top: 8px; }
+.month { padding: 0; margin-bottom: 8px; overflow: hidden; }
+.month summary { display: flex; align-items: center; gap: 10px; padding: 12px 14px 12px 16px; cursor: pointer; list-style: none; }
+.month summary::-webkit-details-marker { display: none; }
+.month summary > svg { width: 16px; height: 16px; color: var(--text3); transition: transform .15s; }
+.month[open] summary > svg { transform: rotate(90deg); }
+.month-main { flex: 1; min-width: 0; }
+.month-title { font-size: 17px; }
+.month-title::first-letter { text-transform: uppercase; }
+.month-title span { font-size: 13px; color: var(--text2); }
+.month-sub { font-size: 14px; color: var(--text2); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.month-change { flex: none; font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.month-change.plus { color: var(--red); }
+.month-change.minus { color: var(--green); }
+.month-body { padding: 0 16px 12px; }
+.month-line { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 14px; color: var(--text2); }
+.month-line b { color: var(--text); font-weight: 500; }
+.month-debts { margin-top: 8px; padding-top: 6px; border-top: .5px solid var(--sep); }
+.month-debts button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 0; font-size: 14px; }
+.month-debts .n { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.month-debts .v { flex: none; color: var(--text2); font-variant-numeric: tabular-nums; }
 
 /* ---------- поля под тип долга ---------- */
 form:not(:has(input[name="kind"][value="card"]:checked)) .only-card,
