@@ -85,7 +85,7 @@ Deno.test({ name: 'Gemini: новый ключ AI Studio (AQ.) работает 
   const r = await chat({ chatId: 44, me, text: 'привет', attachments: [] });
   assert(r.reply === 'Привет!', 'ответ: ' + r.reply);
   const q = geminiRequests;
-  assert(q.length === 2 && q.every(x => x.url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:')), 'Gemini API: ' + q.map(x => x.url));
+  assert(q.length === 2 && q.every(x => x.url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:')), 'Gemini API: ' + q.map(x => x.url));
   assert(q.every(x => x.headers.get('x-goog-api-key') === 'AQ.studio-test-key' && !x.url.includes('?key=')), 'ключ в заголовке');
   assert(geminiScript.length === 0, 'не все ответы использованы');
 });
@@ -110,11 +110,11 @@ Deno.test({ name: 'Gemini: ключ Vertex AI (AQ.) — подбор спосо�
   assert(geminiRequests[0].url.startsWith('https://generativelanguage.googleapis.com/'), 'сначала Gemini API');
   const q = geminiRequests.slice(1);
   assert(q.every(x => x.url.startsWith('https://aiplatform.googleapis.com/v1/publishers/google/models/')), 'адрес Vertex: ' + q[0].url);
-  assert(q[0].url.includes('/gemini-3-flash-preview:') && q[0].url.includes('?key=AQ.vertex-test-key'), 'первая попытка — ключ в адресе: ' + q[0].url);
+  assert(q[0].url.includes('/gemini-3.6-flash:') && q[0].url.includes('?key=AQ.vertex-test-key'), 'первая попытка — ключ в адресе: ' + q[0].url);
   assert(q[1].headers.get('x-goog-api-key') === 'AQ.vertex-test-key' && !q[1].url.includes('?key='), 'вторая — в заголовке');
   assert(q[2].headers.get('authorization') === 'Bearer AQ.vertex-test-key', 'третья — Bearer');
-  assert(q[3].url.includes('/gemini-flash-latest:') && q[3].headers.get('x-goog-api-key'), 'вторая модель, без повторов неудачных способов: ' + q[3].url);
-  assert(q[4].url.includes('/gemini-flash-latest:') && q[4].headers.get('x-goog-api-key') && !q[4].url.includes('?key='), 'ответ идёт найденным способом');
+  assert(q[3].url.includes('/gemini-3-flash-preview:') && q[3].headers.get('x-goog-api-key'), 'вторая модель, без повторов неудачных способов: ' + q[3].url);
+  assert(q[4].url.includes('/gemini-3-flash-preview:') && q[4].headers.get('x-goog-api-key') && !q[4].url.includes('?key='), 'ответ идёт найденным способом');
   assert(geminiScript.length === 0, 'не все ответы использованы');
 });
 
@@ -135,7 +135,7 @@ Deno.test({ name: 'Gemini: у модели кончился лимит — бе�
   const r = await chat({ chatId: 45, me, text: 'привет', attachments: [] });
   assert(r.reply === 'Готово!', 'ответ: ' + r.reply);
   const urls = geminiRequests.map(x => x.url.match(/models\/([^:]+):/)![1]);
-  assert(JSON.stringify(urls) === JSON.stringify(['gemini-3-flash-preview', 'gemini-3-flash-preview', 'gemini-flash-latest', 'gemini-flash-latest']), 'модели: ' + urls);
+  assert(JSON.stringify(urls) === JSON.stringify(['gemini-3.6-flash', 'gemini-3.6-flash', 'gemini-3-flash-preview', 'gemini-3-flash-preview']), 'модели: ' + urls);
 
   // 2. Никто не ответил: лимит, перегрузка и «модели нет» → ошибка «лимит» (на неё бот переключается на Groq), а не «bad»
   forgetChoice();

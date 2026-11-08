@@ -38,8 +38,9 @@ function errorFor(status: number, body: string): AiError {
 export const isNewKey = (key: string) => key.startsWith('AQ.');
 
 /** Модели, которые пробуем по очереди, если DEBTS_GEMINI_MODEL не задан. «latest» у Google бывает перегружена (503) — она не первая.
- * gemini-2.5-flash убрана: новым ключам Google её больше не даёт (404) */
-export const MODEL_CANDIDATES = ['gemini-3-flash-preview', 'gemini-flash-latest', 'gemini-3.8-flash', 'gemini-3-flash'];
+ * gemini-2.5-flash убрана: новым ключам Google её больше не даёт (404).
+ * gemini-3.8-flash в конце: 8 ноября 2026 на нашем ключе не отвечала и за 30 секунд */
+export const MODEL_CANDIDATES = ['gemini-3.6-flash', 'gemini-3-flash-preview', 'gemini-flash-latest', 'gemini-3.8-flash', 'gemini-3-flash'];
 
 /** Куда и как передать ключ: в заголовке x-goog-api-key, в адресе (?key=, как в документации экспресс-режима Vertex) или как Bearer */
 type Auth = 'header' | 'query' | 'bearer';
@@ -178,6 +179,20 @@ async function working() {
   }
   found = { model: ok.model, way: { api: ok.api, auth: ok.auth } };
   return found;
+}
+
+/** Настоящий разговор с вызовом инструмента (только чтение истории): проверяет выбранную модель целиком — для /ai-check?deep=1 */
+export async function deepCheckGemini(todayStr: string) {
+  const { model } = await working();
+  const ctx = { by: 'проверка', files: [], today: todayStr, changed: false };
+  const reply = await runGemini({
+    history: [],
+    context: `Контекст: сегодня ${todayStr}.`,
+    attachments: [],
+    userText: 'Вызови payment_history с limit=1, ничего не меняй и ответь одним словом: «готово».',
+    ctx,
+  });
+  return { model, reply, changed: ctx.changed };
 }
 
 /** Пробный запрос к каждой модели по очереди — для /ai-check и подбора модели. Ключ не раскрывается */
