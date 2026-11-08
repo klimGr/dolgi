@@ -121,4 +121,5 @@ Deno.test({ name: 'Бот: план погашения и нехватка на 
   const r2 = await send(13, 'плачу 10000 в месяц');
   const plan = JSON.parse(r2.calls[0].result);
   assert(plan.enough === true && plan.avalanche.months === 8, 'расчёт: ' + r2.calls[0].result);
+  assert(plan.by_month.length === 3 && plan.by_month.some((m: Row) => Number(m.must_pay) === 3700) && plan.by_month.every((m: Row) => m.gap === 0), 'по месяцам: ' + JSON.stringify(plan.by_month));
 });

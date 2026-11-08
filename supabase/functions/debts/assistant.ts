@@ -1,10 +1,11 @@
 // Общая часть помощника: подсказка для модели, инструменты, контекст и разговор.
 // Сама модель подключается отдельно: Gemini (gemini.ts), Groq (groq.ts) — оба бесплатные — или Claude (claude.ts).
 import { ANTHROPIC_API_KEY, GEMINI_API_KEY, GROQ_API_KEY } from './config.ts';
+import { dueDates } from './calendar.ts';
 import * as db from './db.ts';
 import { dayMonth, moneyExact } from './format.ts';
 import {
-  accrues, amountOn, daysBetween, type Debt, type DebtEvent, type DebtFile, dueAmount, dueKnown, isDate, isOpen, KINDS, monthlyMin, nearPayments, nextDue,
+  accrues, amountOn, daysBetween, type Debt, type DebtEvent, type DebtFile, dueAmount, dueKnown, isDate, isOpen, KINDS, monthAfter, monthlyMin, nearPayments, nextDue,
   payoffMonths, pctLeft, perDay, round2, simulatePayoff,
 } from './logic.ts';
 import * as svc from './service.ts';
@@ -28,7 +29,7 @@ export const SYSTEM = `Ты — помощник семейной пары по 
 • Ответ not_recorded или not_changed значит, что ничего не записано и бот сам задаст человеку вопрос. Когда человек ответит «да», повтори вызов с confirmed_new=true или confirmed=true.
 • Что изменилось, бот допишет отдельной строкой сам: новый остаток и дату следующего платежа не повторяй.
 
-Советы — только когда человек сам спрашивает: что гасить, как быстрее закрыть, хватит ли денег, стоит ли рефинансировать. К подтверждению записи советы не добавляй. На вопрос про план сначала вызови plan_payoff с суммой в месяц (не назвали — спроси) и опирайся на его расчёт, а не на свои прикидки. Разбирай ситуацию на их цифрах: что гасить в первую очередь (обычно самое дорогое по ставке — «лавина»; или самый маленький долг ради мотивации — «снежный ком»), как не терять льготный период по картам, когда имеет смысл рефинансирование, куда направить свободные деньги. Обязательные платежи пропускать нельзя: просрочка — это штрафы и испорченная кредитная история. Займы МФО обычно самые дорогие. Не предлагай брать новые займы, чтобы закрыть старые. Если человеку тяжело, поддержи и подскажи законные варианты: реструктуризация, кредитные каникулы, разговор с банком. Ты не финансовый консультант, но говори прямо и по делу, без нравоучений.
+Советы — только когда человек сам спрашивает: что гасить, как быстрее закрыть, хватит ли денег, стоит ли рефинансировать. К подтверждению записи советы не добавляй. На вопрос про план сначала вызови plan_payoff с суммой в месяц (не назвали — спроси) и опирайся на его расчёт, а не на свои прикидки. В ответе by_month — сколько обязательно заплатить в каждом календарном месяце, gap — чего не хватит, lump_sums — займы, которые надо вернуть целиком к дате, avalanche_saves — разница между «лавиной» и «снежным комом». Не называй сумм, которых там нет, и не путай «К оплате за 30 дней» с календарным месяцем. Не предлагай перекредитование, если о нём не спрашивали. Разбирай ситуацию на их цифрах: что гасить в первую очередь (обычно самое дорогое по ставке — «лавина»; или самый маленький долг ради мотивации — «снежный ком»), как не терять льготный период по картам, когда имеет смысл рефинансирование, куда направить свободные деньги. Обязательные платежи пропускать нельзя: просрочка — это штрафы и испорченная кредитная история. Займы МФО обычно самые дорогие. Не предлагай брать новые займы, чтобы закрыть старые. Если человеку тяжело, поддержи и подскажи законные варианты: реструктуризация, кредитные каникулы, разговор с банком. Ты не финансовый консультант, но говори прямо и по делу, без нравоучений.
 
 Стиль: по-русски, тепло и коротко — это чат в телефоне. Простой текст без Markdown-заголовков и таблиц; суммы можно выделить **жирным**; списки — с «•». Суммы пиши как «12 500 ₽», даты — как «15 ноября».`;
 
@@ -238,8 +239,21 @@ async function guard(name: string, o: Input, ctx: Ctx): Promise<ToolResult | nul
   return null;
 }
 
+/** Сколько обязательно заплатить в каждом календарном месяце и чего не хватит при этом бюджете */
+function mustPayByMonth(list: Debt[], today: string, budget: number) {
+  return [0, 1, 2].map(i => {
+    const month = monthAfter(today, i);
+    // Просроченное считаем в текущем месяце
+    const items = list.flatMap(d => dueDates(d, today).filter(due => due.slice(0, 7) === month || (i === 0 && due.slice(0, 7) < month)).map(due => ({ d, due })));
+    const sum = round2(items.reduce((s, x) => s + (dueKnown(x.d) ? dueAmount(x.d, x.due) : 0), 0));
+    const unknown = items.filter(x => !dueKnown(x.d)).map(x => x.d.name);
+    return { month, must_pay: sum, gap: round2(Math.max(0, sum - budget)), sum_unknown_for: unknown.length ? unknown : undefined };
+  });
+}
+
 function payoffReport(list: Debt[], budget: number, today: string) {
   const minimums = round2(list.reduce((s, d) => s + monthlyMin(d), 0));
+  const byMonth = mustPayByMonth(list, today, budget);
   const lumpSums = list.filter(d => d.kind === 'microloan').map(d => {
     const due = nextDue(d, today);
     return { name: d.name, due, amount: due ? amountOn(d, due) : d.balance };
@@ -252,7 +266,7 @@ function payoffReport(list: Debt[], budget: number, today: string) {
     ...(noMin.length ? [`Нет минимального платежа у: ${names(noMin)}. Взял 5 % от остатка.`] : []),
     'Это оценка: льготные периоды, изменение ставок и новые траты изменят сроки.',
   ];
-  if (budget < minimums) return { enough: false, monthly_budget: budget, minimums, shortfall: round2(minimums - budget), lump_sums: lumpSums, caveats };
+  if (budget < minimums) return { enough: false, monthly_budget: budget, minimums, shortfall: round2(minimums - budget), by_month: byMonth, lump_sums: lumpSums, caveats };
   const avalanche = simulatePayoff(list, budget, 'avalanche', today);
   const snowball = simulatePayoff(list, budget, 'snowball', today);
   const regular = list.filter(d => d.kind !== 'microloan');
@@ -260,6 +274,7 @@ function payoffReport(list: Debt[], budget: number, today: string) {
     enough: true,
     monthly_budget: budget,
     minimums,
+    by_month: byMonth,
     lump_sums: lumpSums,
     avalanche,
     snowball,

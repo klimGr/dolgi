@@ -74,6 +74,9 @@ Deno.test('план погашения: лавина не дороже снеж�
   if (a.interest > s.interest || a.months === null) throw new Error(`лавина ${a.interest}, ком ${s.interest}`);
   eq(simulatePayoff([cheap], 1000, 'avalanche', '2026-11-08').months, null, 'платёж меньше процентов');
   eq(simulatePayoff([], 1000, 'avalanche', '2026-11-08').months, 0, 'долгов нет');
+  const noRate = debt({ id: 'c', name: 'Займ без ставки', kind: 'microloan', balance: 9655, rate: null, minPayment: 9655 });
+  eq(simulatePayoff([cheap, costly, noRate], 15000, 'avalanche', '2026-11-08').order[0], { name: 'Займ без ставки', month: '2026-11' }, 'займ МФО первым, даже без ставки');
+  eq(simulatePayoff([cheap, costly, noRate], 15000, 'snowball', '2026-11-08').order[0].name, 'Займ без ставки');
   eq(monthlyMin(debt({ kind: 'microloan', minPayment: 14812 })), 0);
   eq(monthlyMin(debt({ minPayment: null, balance: 1000 })), 50, 'неизвестный минимум');
 });

@@ -24,7 +24,7 @@ function fold(line: string) {
 }
 
 /** Ближайшие сроки: до конца договора, но не дальше полугода; заём одной суммой — один срок */
-function dueDates(d: Debt, t: string) {
+export function dueDates(d: Debt, t: string) {
   const out: string[] = [];
   let due = nextDue(d, t);
   while (due && out.length < MONTHS_AHEAD) {

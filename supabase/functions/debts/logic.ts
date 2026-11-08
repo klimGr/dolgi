@@ -288,17 +288,22 @@ export interface PayoffPlan { months: number | null; finish: string | null; inte
 /** Обязательно в месяц. Займ МФО возвращают целиком, поэтому в ежемесячный минимум он не входит; неизвестный минимум — 5 % остатка */
 export const monthlyMin = (d: Debt) => (d.kind === 'microloan' ? 0 : Math.min(d.minPayment || d.balance * 0.05, d.balance));
 
-const monthAfter = (todayStr: string, n: number) => {
+/** YYYY-MM через n месяцев; 0 — текущий месяц */
+export const monthAfter = (todayStr: string, n: number) => {
   const [y, m] = todayStr.split('-').map(Number);
   return new Date(Date.UTC(y, m - 1 + n, 1)).toISOString().slice(0, 7);
 };
 
 /**
- * Погашение по месяцам: проценты, затем минимумы, затем всё свободное — в один долг.
- * «Лавина» начинает с самой дорогой ставки, «снежный ком» — с самого маленького остатка. months = null: долги не закрываются за 50 лет.
+ * Погашение по месяцам, первый — текущий: проценты, затем минимумы, затем всё свободное — в один долг.
+ * «Лавина» начинает с самой дорогой ставки, «снежный ком» — с самого маленького остатка.
+ * Займы МФО идут первыми в обоих случаях: их надо вернуть целиком к сроку, даже если ставка не указана.
+ * months = null: долги не закрываются за 50 лет.
  */
 export function simulatePayoff(list: Debt[], budget: number, strategy: Strategy, todayStr: string): PayoffPlan {
-  let alive = list.filter(isOpen).map(d => ({ name: d.name, balance: amountOn(d, todayStr), rate: (d.rate || 0) / 1200, min: monthlyMin(d) }));
+  let alive = list.filter(isOpen).map(d => ({
+    name: d.name, balance: amountOn(d, todayStr), rate: (d.rate || 0) / 1200, min: monthlyMin(d), urgent: d.kind === 'microloan' ? 1 : 0,
+  }));
   const order: PayoffPlan['order'] = [];
   let interest = 0;
   if (!alive.length) return { months: 0, finish: null, interest: 0, order };
@@ -314,15 +319,17 @@ export function simulatePayoff(list: Debt[], budget: number, strategy: Strategy,
       x.balance -= pay;
       left -= pay;
     }
-    const queue = [...alive].sort(strategy === 'avalanche' ? (a, b) => b.rate - a.rate || a.balance - b.balance : (a, b) => a.balance - b.balance);
+    const queue = [...alive].sort((a, b) =>
+      b.urgent - a.urgent || (strategy === 'avalanche' ? b.rate - a.rate || a.balance - b.balance : a.balance - b.balance)
+    );
     for (const x of queue) {
       const pay = Math.min(left, x.balance);
       x.balance -= pay;
       left -= pay;
     }
-    for (const x of alive) if (x.balance < 0.005) order.push({ name: x.name, month: monthAfter(todayStr, month) });
+    for (const x of alive) if (x.balance < 0.005) order.push({ name: x.name, month: monthAfter(todayStr, month - 1) });
     alive = alive.filter(x => x.balance >= 0.005);
-    if (!alive.length) return { months: month, finish: monthAfter(todayStr, month), interest: round2(interest), order };
+    if (!alive.length) return { months: month, finish: monthAfter(todayStr, month - 1), interest: round2(interest), order };
   }
   return { months: null, finish: null, interest: round2(interest), order };
 }
