@@ -189,7 +189,8 @@ export async function deepCheckGemini(todayStr: string) {
     history: [],
     context: `Контекст: сегодня ${todayStr}.`,
     attachments: [],
-    userText: 'Вызови payment_history с limit=1, ничего не меняй и ответь одним словом: «готово».',
+    // Сумму модель может узнать только из инструмента, так что ответ доказывает, что вызов прошёл
+    userText: 'Вызови payment_history с limit=1, ничего не меняй и ответь только суммой из последней записи.',
     ctx,
   });
   return { model, reply, changed: ctx.changed };
