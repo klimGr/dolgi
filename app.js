@@ -170,7 +170,8 @@ function applyPayment(d, events, amount, date, by, note, today) {
   const due = d.payDay ? nextDue({ ...d, balance: before }, today) : null;
   if (due) {
     const start = prevDue(due, d.payDay);
-    const paid = events.filter(e => e.debtId === d.id && e.type === 'payment' && e.date > start).reduce((s, e) => s + e.amount, 0) + amount;
+    // Платёж, который уже закрыл прошлый срок, второй раз не считаем
+    const paid = events.filter(e => e.debtId === d.id && e.type === 'payment' && e.date > start && (e.dueBefore ?? null) === (dueBefore ?? null)).reduce((s, e) => s + e.amount, 0) + amount;
     if (date > start && (paid >= (d.minPayment || 0) - 0.5 || d.balance === 0)) d.paidDue = due;
   }
   if (d.balance === 0 && d.kind !== 'card') d.closed = true;
@@ -635,22 +636,57 @@ function totalCard(list) {
     </div>`;
 }
 
+const upcomingDue = list => list.map(d => ({ d, i: dueInfo(d) })).filter(x => x.i)
+  .sort((a, b) => a.i.due.localeCompare(b.i.due) || b.i.amount - a.i.amount);
+
+// На главной — четыре ближайших платежа; если в день четвёртого или в 2 дня после него есть ещё, показываем и их
+const NEAREST = 4;
+const NEAREST_GAP = 2;
+function nearestDue(items) {
+  if (items.length <= NEAREST) return items;
+  const until = addDays(items[NEAREST - 1].i.due, NEAREST_GAP);
+  return items.filter((x, n) => n < NEAREST || x.i.due <= until);
+}
+
+/** Вторая строка платежа: сумма и когда; для необычных случаев — что это за сумма */
+function dueLine(d, i) {
+  if (!i.known) {
+    const bill = d.statementDay ? dueOnOrAfter(today(), d.statementDay) : '';
+    const note = bill && bill <= i.due ? `банк назовёт сумму ${dayMonth(bill)}` : 'сумма не указана';
+    return i.cls ? `${note} · ${i.when}` : note;
+  }
+  const whole = lumpSum(d) || i.amount >= d.balance - 0.5;
+  return `<b>${dueText(i)}</b> · ${whole && !i.cls ? 'вернуть всё' : i.when}`;
+}
+
+/** Платежи одного дня идут под одной датой */
+function dueRows(items) {
+  return items.map(({ d, i }, n) => {
+    const same = n > 0 && items[n - 1].i.due === i.due;
+    return `
+      <div class="row${same ? ' same-day' : ''}">
+        ${same ? '<span class="daybox"></span>' : `<button class="daybox ${i.cls}" data-go="debt" data-id="${d.id}"><b>${Number(i.due.slice(8, 10))}</b><span>${MONTHS_SHORT[Number(i.due.slice(5, 7)) - 1]}</span></button>`}
+        <button class="row-main" data-go="debt" data-id="${d.id}" style="text-align:left" aria-label="${esc(d.name)}: ${esc(dueText(i))}, ${dayMonth(i.due)}">
+          <div class="row-title"><span class="dot c${d.color}"></span> ${esc(d.name)}</div>
+          <div class="row-sub ${i.cls}">${dueLine(d, i)}</div>
+        </button>
+        <button class="mark" data-go="op" data-kind="payment" data-id="${d.id}" data-due="1" aria-label="Отметить оплату: ${esc(d.name)}">${ICON.check}</button>
+      </div>`;
+  }).join('');
+}
+
 function nextCard(list) {
-  const items = list.map(d => ({ d, i: dueInfo(d) })).filter(x => x.i).sort((a, b) => a.i.due.localeCompare(b.i.due));
+  const items = upcomingDue(list);
   if (!items.length) return '';
-  const { d, i } = items[0];
-  const more = items.length - 1;
+  const shown = nearestDue(items);
+  const more = items.length - shown.length;
+  const unknown = shown.filter(x => !x.i.known).length;
+  const foot = shown.length > 1
+    ? `<div class="row list-foot"><span>Всего до ${dayMonth(shown[shown.length - 1].i.due)}${unknown ? ` · ${unknown} без суммы` : ''}</span><b>${money(dueSum(shown))}</b></div>`
+    : '';
   return `
-    <div class="section-head lg"><h2 class="section-title lg">Ближайший платёж</h2>${more ? `<button class="link" data-tab="payments">Ещё ${more}</button>` : ''}</div>
-    <div class="card next tap ${i.cls}" data-go="debt" data-id="${d.id}">
-      <div class="next-date"><b>${Number(i.due.slice(8, 10))}</b><span>${MONTHS_SHORT[Number(i.due.slice(5, 7)) - 1]}</span></div>
-      <div class="next-main">
-        <div class="next-title"><span class="dot c${d.color}"></span><span>${esc(d.name)}</span></div>
-        <div class="next-sub ${i.cls === 'late' ? 'late' : ''}">${i.when}</div>
-        <div class="next-sum">${dueText(i)}</div>
-      </div>
-      <button class="chip" data-go="op" data-kind="payment" data-id="${d.id}" data-due="1" aria-label="Оплачено">${ICON.check}<span>Оплачено</span></button>
-    </div>`;
+    <div class="section-head lg"><h2 class="section-title lg">${shown.length > 1 ? 'Ближайшие платежи' : 'Ближайший платёж'}</h2>${more ? `<button class="link" data-tab="payments">Ещё ${more}</button>` : ''}</div>
+    <div class="list next-list">${dueRows(shown)}${foot}</div>`;
 }
 
 function debtCard(d) {
@@ -1091,7 +1127,7 @@ function renderPayments() {
   const t = today();
   const list = visibleDebts();
   const ids = new Set(list.map(d => d.id));
-  const upcoming = list.map(d => ({ d, i: dueInfo(d) })).filter(x => x.i).sort((a, b) => a.i.due.localeCompare(b.i.due));
+  const upcoming = upcomingDue(list);
   const month = t.slice(0, 7);
   const dueThisMonth = dueSum(upcoming.filter(x => x.i.due.slice(0, 7) <= month));
   const paidThisMonth = data.events.filter(e => ids.has(e.debtId) && e.type === 'payment' && e.date.slice(0, 7) === month).reduce((s, e) => s + e.amount, 0);
@@ -1115,15 +1151,7 @@ function renderPayments() {
     </div>
 
     <h2 class="section-title">Ближайшие</h2>
-    ${upcoming.length ? `<div class="list">${upcoming.map(({ d, i }) => `
-      <div class="row">
-        <button class="daybox" data-go="debt" data-id="${d.id}"><b>${Number(i.due.slice(8, 10))}</b><span>${MONTHS_SHORT[Number(i.due.slice(5, 7)) - 1]}</span></button>
-        <button class="row-main" data-go="debt" data-id="${d.id}" style="text-align:left">
-          <div class="row-title"><span class="dot c${d.color}"></span> ${esc(d.name)}</div>
-          <div class="row-sub ${i.cls}">${dueText(i)} · ${i.when}</div>
-        </button>
-        <button class="mark" data-go="op" data-kind="payment" data-id="${d.id}" data-due="1" aria-label="Отметить оплату">${ICON.check}</button>
-      </div>`).join('')}</div>`
+    ${upcoming.length ? `<div class="list">${dueRows(upcoming)}</div>`
       : '<div class="list"><div class="empty"><p>Укажите у долгов дату платежа — здесь появится график, а бот начнёт напоминать.</p></div></div>'}
 
     ${groups.size ? [...groups].map(([k, items]) => `

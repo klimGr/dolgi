@@ -271,6 +271,13 @@ button.row:active { background: var(--fill); }
 .mark { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: var(--fill); color: var(--accent); }
 .mark svg { width: 18px; height: 18px; }
 .mark:active { opacity: .6; }
+.row-sub b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.daybox.soon b, .daybox.soon span { color: var(--accent); }
+.daybox.late b, .daybox.late span { color: var(--red); }
+.next-list { margin-bottom: 12px; }
+.row.same-day::before { left: 68px; }
+.row.list-foot { min-height: 0; justify-content: space-between; font-size: 14px; color: var(--text2); }
+.list-foot b { flex: none; font-size: 16px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
 
 .empty { text-align: center; padding: 28px 16px; color: var(--text2); }
 .empty-title { font-size: 17px; font-weight: 600; color: var(--text); margin-bottom: 4px; }

@@ -168,8 +168,9 @@ export function applyPayment(d: Debt, events: DebtEvent[], amount: number, date:
   const due = d.payDay ? nextDue({ ...d, balance: before }, todayStr) : null;
   if (due && d.payDay) {
     const start = prevDue(due, d.payDay);
+    // Платёж, который уже закрыл прошлый срок, второй раз не считаем
     const paid = events
-      .filter(e => e.debtId === d.id && e.type === 'payment' && e.date > start)
+      .filter(e => e.debtId === d.id && e.type === 'payment' && e.date > start && (e.dueBefore ?? null) === (dueBefore ?? null))
       .reduce((s, e) => s + e.amount, 0) + amount;
     if (date > start && (paid >= (d.minPayment || 0) - 0.5 || d.balance === 0)) d.paidDue = due;
   }
