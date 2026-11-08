@@ -24,7 +24,9 @@ Deno.test({ name: 'Groq: ключ Google не подошёл — отвечае�
     chatId: 42, me, text: '',
     attachments: [{ file: { id: 'P1', name: 'Фото', type: 'photo' }, mime: 'image/jpeg', base64: '/9j/4AAQ' }],
   });
-  assert(r.changed && r.reply.includes('10 000'), 'ответ: ' + JSON.stringify(r));
+  assert(!r.changed && r.reply.replace(/ /g, ' ').includes('10 000') && r.reply.includes('Вношу?'), 'сначала вопрос: ' + JSON.stringify(r));
+  const yes = await chat({ chatId: 42, me, text: 'да', attachments: [] });
+  assert(yes.changed, 'запись после «да»: ' + JSON.stringify(yes));
   const d = tables.debts.find(x => x.name === 'Займ у жены');
   assert(d && Number(d.balance) === 10000 && d.pay_day === 15 && JSON.stringify(d.files).includes('P1'), 'долг: ' + JSON.stringify(d));
   assert(geminiRequests.length === 4 && geminiScript.length === 0, 'Google пробовали четырежды');

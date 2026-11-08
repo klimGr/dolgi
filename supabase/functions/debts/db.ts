@@ -212,7 +212,8 @@ export async function history(chatId: number, n = 12): Promise<{ role: 'user' | 
 }
 
 export async function remember(chatId: number, role: 'user' | 'assistant', text: string) {
-  ok(await sb.from('debt_chat').insert({ chat_id: chatId, role, text: text.slice(0, 4000) }));
+  // С запасом: в конце ответа бота может быть служебная метка с тем, что он предложил внести
+  ok(await sb.from('debt_chat').insert({ chat_id: chatId, role, text: text.slice(0, 12000) }));
 }
 
 export async function forget(chatId: number) {

@@ -21,7 +21,9 @@ Deno.test({ name: 'Gemini: договор → add_debt → ответ; плат�
     reply([{ text: 'Добавил карту **Альфа «100 дней»**: долг 41 250 ₽.' }]),
   );
   const r1 = await chat({ chatId: 42, me, text: '', attachments: [{ file: { id: 'F1', name: 'alfa.pdf', type: 'document' }, mime: 'application/pdf', base64: 'JVBERi0=' }] });
-  assert(r1.changed && r1.reply.includes('Альфа'), 'ответ: ' + JSON.stringify(r1));
+  assert(!r1.changed && r1.reply.includes('Альфа') && r1.reply.includes('Вношу?'), 'сначала вопрос: ' + JSON.stringify(r1));
+  const r1yes = await chat({ chatId: 42, me, text: 'да', attachments: [] });
+  assert(r1yes.changed, 'запись после «да»: ' + JSON.stringify(r1yes));
   const d = tables.debts?.[0];
   assert(d && Number(d.balance) === 41250 && d.pay_day === 8 && JSON.stringify(d.files).includes('F1'), 'долг: ' + JSON.stringify(d));
 

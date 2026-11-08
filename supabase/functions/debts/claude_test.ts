@@ -20,8 +20,9 @@ Deno.test({ name: 'Claude: договор → add_debt → ответ; зате�
     text: '',
     attachments: [{ file: { id: 'FILE1', name: 'dogovor.pdf', type: 'document' }, mime: 'application/pdf', base64: 'JVBERi0=' }],
   });
-  assert(r1.changed, 'изменение не отмечено');
-  assert(r1.reply.includes('Тинькофф'), 'нет ответа модели');
+  assert(!r1.changed && r1.reply.includes('Тинькофф') && r1.reply.includes('Вношу?'), 'сначала вопрос: ' + r1.reply);
+  const yes = await chat({ chatId: 42, me: { id: '42', name: 'Клим' }, text: 'да', attachments: [] });
+  assert(yes.changed, 'изменение не отмечено');
 
   const debt = tables.debts?.[0];
   assert(debt, 'долг не сохранён');
