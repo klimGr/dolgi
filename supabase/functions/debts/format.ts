@@ -3,6 +3,9 @@ import { type Debt, daysBetween, KIND_NAMES } from './logic.ts';
 
 const nf0 = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 });
 export const money = (n: number) => nf0.format(Math.round(n || 0)) + '\u00a0₽';
+const nf2 = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 });
+/** С копейками, если они есть: так цифры сходятся с приложением банка */
+export const moneyExact = (n: number) => nf2.format(n || 0) + ' ₽';
 export const pct = (x: number) => Math.round(x * 100) + '%';
 
 const MONTHS_GEN = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];

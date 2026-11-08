@@ -181,21 +181,6 @@ async function working() {
   return found;
 }
 
-/** Настоящий разговор с вызовом инструмента (только чтение истории): проверяет выбранную модель целиком — для /ai-check?deep=1 */
-export async function deepCheckGemini(todayStr: string) {
-  const { model } = await working();
-  const ctx = { by: 'проверка', files: [], today: todayStr, changed: false };
-  const reply = await runGemini({
-    history: [],
-    context: `Контекст: сегодня ${todayStr}.`,
-    attachments: [],
-    // Сумму модель может узнать только из инструмента, так что ответ доказывает, что вызов прошёл
-    userText: 'Вызови payment_history с limit=1, ничего не меняй и ответь только суммой из последней записи.',
-    ctx,
-  });
-  return { model, reply, changed: ctx.changed };
-}
-
 /** Пробный запрос к каждой модели по очереди — для /ai-check и подбора модели. Ключ не раскрывается */
 export async function checkGemini(models: string[]) {
   const key = GEMINI_API_KEY();

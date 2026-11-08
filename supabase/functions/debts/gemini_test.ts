@@ -29,7 +29,7 @@ Deno.test({ name: 'Gemini: договор → add_debt → ответ; плат�
   assert(first.url.endsWith('/models/gemini-flash-latest:generateContent'), 'модель: ' + first.url);
   assert(first.headers.get('x-goog-api-key') === 'gemini-test-key', 'ключ в заголовке');
   const decl = (first.body.tools as Row[])[0].functionDeclarations as Row[];
-  assert(decl.length === 6 && 'parametersJsonSchema' in decl[0], 'инструменты');
+  assert(decl.length === 9 && 'parametersJsonSchema' in decl[0], 'инструменты');
   assert(String(((first.body.systemInstruction as Row).parts as Row[])[0].text).includes('помощник'), 'системная подсказка');
   const userParts = ((first.body.contents as Row[]).at(-1)!.parts as Row[]);
   assert(String(userParts[0].text).startsWith('Контекст') && 'inlineData' in userParts[1], 'контекст, затем PDF');

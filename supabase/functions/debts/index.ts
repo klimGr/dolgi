@@ -109,8 +109,10 @@ Deno.serve(async req => {
     // Проверка ключа ИИ: какие модели отвечают (ключ не раскрывается)
     if (route === 'ai-check') {
       if (!(await isServiceKey(url.searchParams.get('key') || req.headers.get('x-cron-key'), SECRET))) return json({ error: 'forbidden' }, 403);
-      const { checkGemini, deepCheckGemini, MODEL_CANDIDATES } = await import('./gemini.ts');
-      if (url.searchParams.get('deep')) return json(await deepCheckGemini(today(TZ)));
+      // ?trial=текст — как модель поведёт себя с этим сообщением: на настоящих данных, но без записи
+      const trial = url.searchParams.get('trial');
+      if (trial) return json(await (await import('./assistant.ts')).trialChat(trial));
+      const { checkGemini, MODEL_CANDIDATES } = await import('./gemini.ts');
       const { checkGroq } = await import('./groq.ts');
       const models = url.searchParams.get('models')?.split(',').filter(Boolean) ?? MODEL_CANDIDATES;
       const [gemini, groq] = await Promise.all([

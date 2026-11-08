@@ -172,4 +172,14 @@ export async function removeEvent(id: string) {
     await db.saveDebt(d);
   }
   await db.deleteEvent(id);
+  return d;
+}
+
+/** Исправить запись о платеже: отменяем её и записываем заново, чтобы остаток и срок пересчитались как положено */
+export async function editPayment(id: string, sum: unknown, date: unknown, note?: string) {
+  const e = await db.event(id);
+  if (!e) throw new UserError('Запись не найдена');
+  if (e.type !== 'payment') throw new UserError('Так можно исправить только платёж');
+  await removeEvent(id);
+  return pay(e.debtId, sum ?? e.amount, date ?? e.date, e.by, note ?? e.note);
 }

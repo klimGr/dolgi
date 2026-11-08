@@ -1,7 +1,7 @@
 // deno test supabase/functions/debts/logic_test.ts
 import {
-  accrue, amountOn, applyBalance, applyPayment, type Debt, type DebtEvent, dueAmount, dueIn, dueOnOrAfter, freeBy, lumpSum, nextDue, payoffMonths,
-  perDay, prevDue, revertEvent, setSchedule, statementAsk, totals,
+  accrue, amountOn, applyBalance, applyPayment, type Debt, type DebtEvent, dueAmount, dueIn, dueOnOrAfter, freeBy, lumpSum, monthlyMin, nearPayments, nextDue,
+  payoffMonths, perDay, prevDue, revertEvent, setSchedule, simulatePayoff, statementAsk, totals,
 } from './logic.ts';
 
 function eq(actual: unknown, expected: unknown, msg = '') {
@@ -63,6 +63,26 @@ Deno.test('платёж после срока не считается второ
   eq(nextDue(d, '2026-11-08'), '2026-12-07', 'ноябрьский срок закрыт');
   events.push(applyPayment(d, events, 200, '2026-11-10', 'Клим', '', '2026-11-10'));
   eq(nextDue(d, '2026-11-10'), '2026-12-07', 'маленькая доплата декабрь не закрывает');
+});
+
+Deno.test('план погашения: лавина не дороже снежного кома, займ МФО не входит в минимум', () => {
+  const cheap = debt({ id: 'a', name: 'Большой дешёвый', balance: 100000, rate: 20, minPayment: 3000 });
+  const costly = debt({ id: 'b', name: 'Малый дорогой', balance: 30000, rate: 60, minPayment: 1500 });
+  const a = simulatePayoff([cheap, costly], 15000, 'avalanche', '2026-11-08');
+  const s = simulatePayoff([cheap, costly], 15000, 'snowball', '2026-11-08');
+  eq(a.order[0].name, 'Малый дорогой', 'лавина начинает с дорогого');
+  if (a.interest > s.interest || a.months === null) throw new Error(`лавина ${a.interest}, ком ${s.interest}`);
+  eq(simulatePayoff([cheap], 1000, 'avalanche', '2026-11-08').months, null, 'платёж меньше процентов');
+  eq(simulatePayoff([], 1000, 'avalanche', '2026-11-08').months, 0, 'долгов нет');
+  eq(monthlyMin(debt({ kind: 'microloan', minPayment: 14812 })), 0);
+  eq(monthlyMin(debt({ minPayment: null, balance: 1000 })), 50, 'неизвестный минимум');
+});
+
+Deno.test('похожие платежи ищем в окне трёх дней и только по этому долгу', () => {
+  const pay = (id: string, debtId: string, date: string, type: DebtEvent['type'] = 'payment') =>
+    ({ id, debtId, type, amount: 100, delta: -100, date, by: '', note: '', dueBefore: null, dueAfter: null, createdAt: '' });
+  const list = [pay('1', 'd1', '2026-11-05'), pay('2', 'd1', '2026-11-04'), pay('3', 'd2', '2026-11-08'), pay('4', 'd1', '2026-11-08', 'charge')];
+  eq(nearPayments(list, 'd1', '2026-11-08').map(e => e.id), ['1']);
 });
 
 Deno.test('просрочка закрывается поздним платежом', () => {

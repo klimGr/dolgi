@@ -278,6 +278,55 @@ export function freeBy(list: Debt[], todayStr: string): { month: string | null; 
   return { month: end.toISOString().slice(0, 7), unknown, never };
 }
 
+/** Платежи по долгу за несколько дней вокруг даты: новый платёж может оказаться одним из них */
+export const nearPayments = (events: DebtEvent[], debtId: string, date: string, days = 3) =>
+  events.filter(e => e.debtId === debtId && e.type === 'payment' && Math.abs(daysBetween(e.date, date)) <= days);
+
+export type Strategy = 'avalanche' | 'snowball';
+export interface PayoffPlan { months: number | null; finish: string | null; interest: number; order: { name: string; month: string }[] }
+
+/** Обязательно в месяц. Займ МФО возвращают целиком, поэтому в ежемесячный минимум он не входит; неизвестный минимум — 5 % остатка */
+export const monthlyMin = (d: Debt) => (d.kind === 'microloan' ? 0 : Math.min(d.minPayment || d.balance * 0.05, d.balance));
+
+const monthAfter = (todayStr: string, n: number) => {
+  const [y, m] = todayStr.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1 + n, 1)).toISOString().slice(0, 7);
+};
+
+/**
+ * Погашение по месяцам: проценты, затем минимумы, затем всё свободное — в один долг.
+ * «Лавина» начинает с самой дорогой ставки, «снежный ком» — с самого маленького остатка. months = null: долги не закрываются за 50 лет.
+ */
+export function simulatePayoff(list: Debt[], budget: number, strategy: Strategy, todayStr: string): PayoffPlan {
+  let alive = list.filter(isOpen).map(d => ({ name: d.name, balance: amountOn(d, todayStr), rate: (d.rate || 0) / 1200, min: monthlyMin(d) }));
+  const order: PayoffPlan['order'] = [];
+  let interest = 0;
+  if (!alive.length) return { months: 0, finish: null, interest: 0, order };
+  for (let month = 1; month <= 600; month++) {
+    for (const x of alive) {
+      const added = x.balance * x.rate;
+      x.balance += added;
+      interest += added;
+    }
+    let left = budget;
+    for (const x of alive) {
+      const pay = Math.min(x.min, x.balance, left);
+      x.balance -= pay;
+      left -= pay;
+    }
+    const queue = [...alive].sort(strategy === 'avalanche' ? (a, b) => b.rate - a.rate || a.balance - b.balance : (a, b) => a.balance - b.balance);
+    for (const x of queue) {
+      const pay = Math.min(left, x.balance);
+      x.balance -= pay;
+      left -= pay;
+    }
+    for (const x of alive) if (x.balance < 0.005) order.push({ name: x.name, month: monthAfter(todayStr, month) });
+    alive = alive.filter(x => x.balance >= 0.005);
+    if (!alive.length) return { months: month, finish: monthAfter(todayStr, month), interest: round2(interest), order };
+  }
+  return { months: null, finish: null, interest: round2(interest), order };
+}
+
 /** Порядок погашения «лавиной»: сначала самая дорогая ставка */
 export const byRate = (list: Debt[]) =>
   list.filter(d => isOpen(d) && d.rate).sort((a, b) => (b.rate || 0) - (a.rate || 0));
