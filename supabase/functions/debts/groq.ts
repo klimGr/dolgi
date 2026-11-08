@@ -44,8 +44,9 @@ export function retryAfter(body: string): number | null {
 }
 
 // Бесплатный тариф считает токены в минуту: несколько фото подряд упираются в лимит на несколько секунд.
+// Обычный ответ с инструментом — два больших запроса подряд, между ними Groq просит подождать около 30 секунд.
 // Короткую паузу ждём сами, долгую (суточный лимит) — отдаём наверх
-const MAX_WAIT = 25;
+const MAX_WAIT = 35;
 export let sleep = (s: number) => new Promise(r => setTimeout(r, s * 1000));
 export const setSleep = (f: typeof sleep) => void (sleep = f);
 
