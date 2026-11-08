@@ -847,9 +847,12 @@ function trendFacts(months, list) {
   const inM = m => `в\u00a0${MONTHS_IN[mo(m)]}${year(m)}`;
   const nameM = m => `${MONTHS[mo(m)]}${year(m)}`;
   const maxBy = (arr, f) => arr.reduce((a, b) => (f(b) > f(a) ? b : a));
-  const why = m => (m.added > 0.5 ? 'появился новый долг'
-    : m.paid === 0 ? (m.interest > 0 ? 'начислялись проценты, а платежей не записано' : 'платежей не записано')
-      : 'платежи не перекрыли проценты и новые траты');
+  const why = m => {
+    if (m.added > 0.5) return 'появился новый долг';
+    if (m.paid > 0) return 'платежи не перекрыли проценты и новые траты';
+    const cause = m.interest > 0 ? 'начислялись проценты' : 'выросли траты или остаток по выписке';
+    return withPaid.length ? `${cause}, а платежей в этом месяце не записано` : cause;
+  };
 
   const lines = [];
   const withPaid = months.filter(m => m.paid > 0);
