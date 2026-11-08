@@ -60,3 +60,35 @@ Deno.test('карта без минимального платежа: кнопк
   await handleUpdate({ update_id: 9, callback_query: { id: 'cb9', from: { id: 43, first_name: 'Маша' }, data: `pay:${d.id}:${addDays(t, 2)}`, message: { message_id: 12, chat: { id: 43 } } } });
   assert(Number(tables.debts.find(x => x.id === d.id)!.balance) === 163904, 'весь долг списан одной кнопкой');
 });
+
+Deno.test('бот просит свежую выписку у владельца карты, один раз', async () => {
+  const t = today('Europe/Moscow');
+  const day = Number(addDays(t, -1).slice(8, 10));
+  await svc.createDebt({ name: 'Альфа Маша', kind: 'card', owner: '43', balance: 1000, minPayment: 100, statementDay: day });
+  telegramCalls.length = 0;
+  const r1 = await runReminders();
+  assert(r1.asked.some(x => x.startsWith('Альфа Маша')), 'выписку не попросили: ' + JSON.stringify(r1.asked));
+  const asks = telegramCalls.filter(c => c.method === 'sendMessage' && String(c.body.text).includes('Альфа Маша') && String(c.body.text).includes('выписку'));
+  assert(asks.length === 1 && asks[0].body.chat_id === 43, 'только владельцу: ' + JSON.stringify(asks.map(c => c.body.chat_id)));
+  assert(tables.debt_chat.some(r => r.chat_id === 43 && String(r.text).includes('выписку')), 'в истории разговора');
+  const r2 = await runReminders();
+  assert(!r2.asked.some(x => x.startsWith('Альфа Маша')), 'попросили дважды');
+});
+
+Deno.test('напоминания начисляют проценты по займу и пишут одну запись за месяц', async () => {
+  const t = today('Europe/Moscow');
+  const d = await svc.createDebt({ name: 'Заём', kind: 'microloan', owner: '43', balance: 10000, rate: 365, principal: 10000 });
+  assert(d.accruedTo === t, 'отсчёт с сегодня: ' + d.accruedTo);
+  const row = tables.debts.find(r => r.id === d.id)!;
+  row.accrued_to = addDays(t, -2);
+  await runReminders();
+  assert(Number(row.balance) === 10200, 'начислено за 2 дня: ' + row.balance);
+  assert(row.accrued_to === t, 'дата начисления');
+  const interest = tables.debt_events.filter(e => e.debt_id === d.id && e.type === 'interest');
+  assert(interest.length === 1 && Number(interest[0].amount) === 200, 'запись: ' + JSON.stringify(interest));
+  row.accrued_to = addDays(t, -1);
+  await runReminders();
+  const again = tables.debt_events.filter(e => e.debt_id === d.id && e.type === 'interest');
+  assert(again.length === 1 && Number(again[0].amount) === 300 && Number(again[0].delta) === 300, 'та же запись копится: ' + JSON.stringify(again));
+  assert(Number(row.balance) === 10300, 'остаток: ' + row.balance);
+});

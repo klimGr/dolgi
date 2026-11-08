@@ -4,11 +4,14 @@
 //   GET  /debts/setup?key=… — подключить вебхук, меню и команды бота (один раз после деплоя)
 //   GET  /debts/ai-check — проверить ключ ИИ и подобрать модель
 //   GET  /debts/avatar?key=… — поставить боту аватарку avatar.jpg с сайта мини-приложения
+//   GET  /debts/calendar?token=… — платежи для подписки в Календаре телефона
 //   POST /debts         — API мини-приложения
 import { handleApi } from './api.ts';
 import { handleUpdate, type TgUpdate } from './bot.ts';
-import { APP_URL, BOT_TOKEN, GEMINI_API_KEY, SECRET, SUPABASE_URL } from './config.ts';
-import { isServiceKey } from './db.ts';
+import { calendarText } from './calendar.ts';
+import { APP_URL, BOT_TOKEN, GEMINI_API_KEY, isAllowed, SECRET, SUPABASE_URL, TZ } from './config.ts';
+import { debts, isServiceKey, loadAllowed, memberByToken } from './db.ts';
+import { today } from './logic.ts';
 import { runReminders } from './reminders.ts';
 import { tg, tgUpload } from './telegram.ts';
 
@@ -82,6 +85,15 @@ Deno.serve(async req => {
     if (route === 'cron') {
       if (!(await isServiceKey(req.headers.get('x-cron-key') || url.searchParams.get('key'), SECRET))) return json({ error: 'forbidden' }, 403);
       return json(await runReminders());
+    }
+
+    // Календарь телефона забирает ссылку сам, без входа: доступ — по личному токену, только чтение
+    if (route === 'calendar') {
+      const [member] = await Promise.all([memberByToken(url.searchParams.get('token') || '', 'calendar'), loadAllowed()]);
+      if (!member || !isAllowed(member.id)) return new Response('forbidden', { status: 403 });
+      return new Response(calendarText(await debts(), today(TZ), new Date()), {
+        headers: { 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Disposition': 'inline; filename="dolgi.ics"' },
+      });
     }
 
     if (route === 'avatar') {

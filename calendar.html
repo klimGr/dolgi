@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Платежи в Календаре</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #F2F2F7; --card: #FFF; --text: #000; --text2: rgba(60, 60, 67, .6); --accent: #007AFF; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #000; --card: #1C1C1E; --text: #FFF; --text2: rgba(235, 235, 245, .6); } }
+    body { margin: 0; padding: 48px 16px; background: var(--bg); color: var(--text); font: 17px/1.4 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+    main { max-width: 440px; margin: 0 auto; padding: 24px 20px; border-radius: 16px; background: var(--card); }
+    h1 { margin: 0 0 8px; font-size: 24px; letter-spacing: -.02em; }
+    p { margin: 0 0 16px; color: var(--text2); font-size: 15px; }
+    a { display: block; padding: 14px; border-radius: 12px; background: var(--accent); color: #FFF; font-weight: 600; text-align: center; text-decoration: none; }
+    b { color: var(--text); font-weight: 600; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Платежи в Календаре</h1>
+    <p>Телефон спросит, подписаться ли на календарь, — согласитесь. Чтобы приходили напоминания, переключатель <b>«Удалить напоминания»</b> должен быть выключен.</p>
+    <a id="go" href="#">Подписаться</a>
+  </main>
+  <script>
+    // Адрес календаря лежит после #, поэтому личная ссылка не уходит на сервер сайта
+    var url = decodeURIComponent(location.hash.slice(1));
+    var ok = /^webcal:\/\/fpyxaygiiiivnjrujqyf\.supabase\.co\/functions\/v1\/debts\/calendar\?token=[0-9a-f]{48}$/.test(url);
+    var link = document.getElementById('go');
+    if (ok) {
+      link.href = url;
+      location.href = url;
+    } else {
+      link.textContent = 'Откройте эту страницу из приложения';
+      link.removeAttribute('href');
+    }
+  </script>
+</body>
+</html>

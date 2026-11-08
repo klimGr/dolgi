@@ -76,3 +76,33 @@ Deno.test({ name: 'доступ: ID из debt_settings.allowed_ids — без с
   await loadAllowed(true);
   assert(!isAllowed(77) && isAllowed(42), 'убрали из базы — доступа нет, секрет остался');
 });
+
+Deno.test({ name: 'приложение с экрана телефона: вход по личному токену; календарь — отдельный токен', sanitizeOps: false, sanitizeResources: false }, async () => {
+  const auth = await initData(42, 'Клим');
+  // deno-lint-ignore no-explicit-any
+  const token = async (kind: string) => ((await handleApi({ initData: auth, action: 'token', kind })) as { status: number; data: any }).data.token as string;
+  const app = await token('app');
+  assert(/^[0-9a-f]{48}$/.test(app), 'формат токена: ' + app);
+  assert(await token('app') === app, 'ссылка постоянная');
+  const cal = await token('calendar');
+  assert(cal !== app, 'токен календаря отдельный');
+
+  // deno-lint-ignore no-explicit-any
+  const byToken = (await handleApi({ token: app, action: 'state' })) as { status: number; data: any };
+  assert(byToken.status === 200 && byToken.data.me.id === '42', 'вход по токену: ' + JSON.stringify(byToken.data.me));
+
+  const wrongKind = await handleApi({ token: cal, action: 'state' });
+  assert(wrongKind.status === 401, 'токен календаря не даёт входа в приложение');
+  // deno-lint-ignore no-explicit-any
+  const bad = (await handleApi({ token: 'f'.repeat(48), action: 'state' })) as { status: number; data: any };
+  assert(bad.status === 401 && bad.data.relogin === true, 'чужой токен');
+  const inject = await handleApi({ token: 'x.or(tg_id.eq.42)', action: 'state' });
+  assert(inject.status === 401, 'мусор вместо токена');
+
+  // Человека убрали из списка — токен перестаёт работать
+  const member = tables.debt_members.find(m => String(m.tg_id) === '42')!;
+  member.tg_id = 99;
+  const removed = await handleApi({ token: app, action: 'state' });
+  assert(removed.status === 403, 'токен без доступа');
+  member.tg_id = 42;
+});

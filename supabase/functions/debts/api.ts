@@ -1,8 +1,8 @@
-// API для мини-приложения. Каждый запрос подписан Telegram (initData) — проверяем подпись и доступ.
+// API для мини-приложения. Запрос подписан Telegram (initData) или, с экрана телефона, несёт личный токен — проверяем и доступ.
 import { isAllowed } from './config.ts';
 import * as db from './db.ts';
 import * as svc from './service.ts';
-import { tg, userName, verifyInitData } from './telegram.ts';
+import { tg, type TgUser, userName, verifyInitData } from './telegram.ts';
 
 let botName = '';
 async function botUsername() {
@@ -10,11 +10,17 @@ async function botUsername() {
   return botName;
 }
 
-type Body = Record<string, unknown> & { initData?: string; action?: string };
+type Body = Record<string, unknown> & { initData?: string; token?: string; action?: string };
+
+async function whoIs(body: Body): Promise<TgUser | null> {
+  if (!body.token) return await verifyInitData(String(body.initData || ''));
+  const m = await db.memberByToken(String(body.token), 'app');
+  return m ? { id: Number(m.id), first_name: m.name } as TgUser : null;
+}
 
 export async function handleApi(body: Body): Promise<{ status: number; data: unknown }> {
-  const user = await verifyInitData(String(body.initData || ''));
-  if (!user) return { status: 401, data: { error: 'Не удалось проверить вход через Telegram' } };
+  const user = await whoIs(body);
+  if (!user) return { status: 401, data: { error: body.token ? 'Ссылка больше не действует' : 'Не удалось проверить вход через Telegram', relogin: !!body.token } };
   await db.loadAllowed();
   if (!isAllowed(user.id)) return { status: 403, data: { error: 'Нет доступа', id: user.id } };
   const by = userName(user);
@@ -26,6 +32,9 @@ export async function handleApi(body: Body): Promise<{ status: number; data: unk
     switch (body.action) {
       case 'state':
         break;
+      case 'token':
+        await touching;
+        return { status: 200, data: { token: await db.memberToken(user.id, body.kind === 'calendar' ? 'calendar' : 'app') } };
       case 'save_debt': {
         const input = (body.debt || {}) as svc.DebtInput & { id?: string };
         if (input.id && !body.create) await svc.updateDebt(input.id, input, by, undefined, eventId);

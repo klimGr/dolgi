@@ -1,7 +1,7 @@
 // Хранилище: таблицы Postgres через supabase-js под сервисным ключом
 import { createClient } from 'npm:@supabase/supabase-js@2.118.0';
 import { SERVICE_KEY, setExtraAllowed, SUPABASE_URL } from './config.ts';
-import type { Debt, DebtEvent, DebtFile, Kind } from './logic.ts';
+import { type Debt, type DebtEvent, type DebtFile, type Kind, round2 } from './logic.ts';
 
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 
@@ -27,6 +27,27 @@ export async function touchMember(id: number, name: string, chatId?: number) {
   if (chatId) ok(await sb.from('debt_members').update({ chat_id: chatId }).eq('tg_id', id));
 }
 
+/** Личные ссылки: app — вход в приложение с экрана телефона, calendar — подписка на платежи (только чтение) */
+export type TokenKind = 'app' | 'calendar';
+const tokenColumn = (kind: TokenKind) => (kind === 'app' ? 'app_token' : 'calendar_token');
+const newToken = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), b => b.toString(16).padStart(2, '0')).join('');
+
+export async function memberByToken(token: string, kind: TokenKind): Promise<Member | null> {
+  if (!/^[0-9a-f]{48}$/.test(token)) return null;
+  const r = ok(await sb.from('debt_members').select('*').eq(tokenColumn(kind), token).maybeSingle()) as Record<string, unknown> | null;
+  return r ? { id: String(r.tg_id), name: String(r.name || ''), chatId: num(r.chat_id) } : null;
+}
+
+/** Токен участника; если его ещё нет — создаём */
+export async function memberToken(id: number, kind: TokenKind): Promise<string> {
+  const column = tokenColumn(kind);
+  const r = ok(await sb.from('debt_members').select('*').eq('tg_id', id).maybeSingle()) as Record<string, unknown> | null;
+  if (r?.[column]) return String(r[column]);
+  const token = newToken();
+  ok(await sb.from('debt_members').update({ [column]: token }).eq('tg_id', id));
+  return token;
+}
+
 /* ---------- долги ---------- */
 const toDebt = (r: Record<string, unknown>): Debt => ({
   id: String(r.id),
@@ -47,6 +68,9 @@ const toDebt = (r: Record<string, unknown>): Debt => ({
   files: (r.files as DebtFile[]) || [],
   closed: !!r.closed,
   createdAt: String(r.created_at),
+  principal: num(r.principal),
+  accruedTo: (r.accrued_to as string) || null,
+  statementDay: num(r.statement_day),
 });
 
 const fromDebt = (d: Debt) => ({
@@ -67,6 +91,9 @@ const fromDebt = (d: Debt) => ({
   notes: d.notes,
   files: d.files,
   closed: d.closed,
+  principal: d.principal ?? null,
+  accrued_to: d.accruedTo ?? null,
+  statement_day: d.statementDay ?? null,
   updated_at: new Date().toISOString(),
 });
 
@@ -127,6 +154,16 @@ export async function insertEvent(e: DebtEvent) {
     due_before: e.dueBefore,
     due_after: e.dueAfter,
   }));
+}
+
+/** Проценты по займу: одна запись на месяц, чтобы история не забивалась ежедневными строчками */
+export async function addInterest(d: Debt, added: number, date: string) {
+  const id = `int${d.id}${date.slice(0, 7).replace('-', '')}`;
+  const current = await event(id);
+  const total = round2((current?.amount ?? 0) + added);
+  ok(await sb.from('debt_events').upsert({
+    id, debt_id: d.id, type: 'interest', amount: total, delta: total, date, by_name: '', note: '', due_before: d.paidDue, due_after: d.paidDue,
+  }, { onConflict: 'id' }));
 }
 
 export async function deleteEvent(id: string) {

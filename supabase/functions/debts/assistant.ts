@@ -2,7 +2,7 @@
 // Сама модель подключается отдельно: Gemini (gemini.ts), Groq (groq.ts) — оба бесплатные — или Claude (claude.ts).
 import { ANTHROPIC_API_KEY, GEMINI_API_KEY, GROQ_API_KEY } from './config.ts';
 import * as db from './db.ts';
-import { daysBetween, type Debt, type DebtFile, isDate, KINDS, nextDue, payoffMonths, pctLeft } from './logic.ts';
+import { accrues, amountOn, daysBetween, type Debt, type DebtFile, isDate, KINDS, nextDue, payoffMonths, pctLeft, perDay } from './logic.ts';
 import * as svc from './service.ts';
 
 export const SYSTEM = `Ты — помощник семейной пары по долгам в Telegram-боте. У них кредитные карты, кредиты и займы. Твоя задача — держать учёт в порядке, помогать не пропускать платежи и вместе выбираться из долгов.
@@ -10,6 +10,8 @@ export const SYSTEM = `Ты — помощник семейной пары по 
 В начале каждого сообщения пользователя есть блок «Контекст»: сегодняшняя дата, кто пишет, участники и текущие долги в JSON. Это актуальные данные из базы — опирайся на них и ссылайся на долги по id. Всё, что ты меняешь инструментами, сразу видно в мини-приложении с графиком.
 
 Документы. Когда присылают договор, график платежей, выписку, скриншот из банковского приложения или фото, найди: кредитора, тип долга, сумму по договору, текущий остаток, лимит (для карт), процентную ставку (% годовых; если указана дневная — переведи в годовые ×365 и скажи об этом), обязательный или минимальный платёж, дату или число платежа, дату окончания. ПСК — не ставка: её можно упомянуть в заметках. Если такой долг уже есть в списке (тот же банк и продукт) — обнови его, иначе добавь новый. Не придумывай значения, которых нет в документе: оставь поле пустым и коротко перечисли, чего не хватает. Если документ не про долг или его не прочитать — так и скажи.
+
+Займы МФО: balance — сколько нужно вернуть на сегодня (с процентами), principal — основной долг без процентов, rate — ставка (0,8 % в день = 292). Если есть ставка и основной долг, проценты бот начисляет сам каждый день. Карты: если виден день формирования выписки, запиши его в statement_day. Бот сам просит свежий скриншот после выписки — такой скриншот разбирай как обновление этой карты: новый остаток и минимальный платёж.
 
 Сообщения про деньги: «заплатил 5000 по Тинькофф» — платёж; «по карте сейчас 48 300» — новый остаток; «потратила 3000 с кредитки» — долг вырос. Если непонятно, о каком долге речь или какая сумма, — переспроси, а не угадывай. После изменения коротко подтверди, что сделал, и назови новый остаток. Удалять долги ты не можешь — для этого есть приложение.
 
@@ -32,6 +34,8 @@ const debtFields = {
   next_payment: { type: 'string', description: 'Дата ближайшего платежа YYYY-MM-DD, если известна точно — точнее, чем pay_day' },
   end_date: { type: 'string', description: 'Дата окончания договора или последнего платежа, YYYY-MM-DD' },
   notes: { type: 'string', description: 'Важное из договора: льготный период, ПСК, штрафы, страховка, номер договора' },
+  principal: { type: 'number', description: 'Только для займов МФО: основной долг без процентов, ₽ — на него начисляются проценты' },
+  statement_day: { type: 'integer', minimum: 1, maximum: 31, description: 'Только для карт: число месяца, когда банк формирует выписку' },
 } as const;
 
 export interface ToolDef { name: string; description: string; properties: Record<string, unknown>; required: string[] }
@@ -101,6 +105,7 @@ function validate(input: unknown, spec: Record<string, Check>, required: string[
 const FIELD_TYPES: Record<string, Check> = {
   name: 'string', kind: 'string', owner: 'string', creditor: 'string', start: 'number', balance: 'number', limit: 'number',
   rate: 'number', min_payment: 'number', pay_day: 'integer', next_payment: 'string', end_date: 'string', notes: 'string',
+  principal: 'number', statement_day: 'integer',
 };
 const SPECS: Record<string, { spec: Record<string, Check>; required: string[] }> = {
   add_debt: { spec: FIELD_TYPES, required: ['name', 'kind', 'balance'] },
@@ -126,6 +131,8 @@ const toInput = (o: Input): svc.DebtInput => ({
   endDate: o.end_date as string | undefined,
   notes: o.notes as string | undefined,
   closed: o.closed as boolean | undefined,
+  principal: o.principal as number | undefined,
+  statementDay: o.statement_day as number | undefined,
 });
 
 export interface Ctx { by: string; files: DebtFile[]; today: string; changed: boolean }
@@ -195,6 +202,11 @@ function brief(d: Debt, today: string) {
     days_to_due: due ? daysBetween(today, due) : undefined,
     payoff_months_at_min: months === Infinity ? 'не гасится: платёж меньше процентов' : months ?? undefined,
     end_date: d.endDate ?? undefined,
+    principal: d.principal ?? undefined,
+    statement_day: d.statementDay ?? undefined,
+    to_repay_today: accrues(d) ? amountOn(d, today) : undefined,
+    interest_per_day: accrues(d) ? perDay(d) : undefined,
+    to_repay_on_due: accrues(d) && due ? amountOn(d, due) : undefined,
     notes: d.notes ? d.notes.slice(0, 300) : undefined,
     files: d.files.length || undefined,
     closed: d.closed || undefined,

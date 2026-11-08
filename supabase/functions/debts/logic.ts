@@ -37,9 +37,12 @@ export interface Debt {
   files: DebtFile[];
   closed: boolean;
   createdAt: string;
+  principal?: number | null; // основной долг займа: на него начисляются проценты
+  accruedTo?: string | null; // по какой день проценты уже включены в balance
+  statementDay?: number | null; // число месяца, когда банк формирует выписку по карте
 }
 
-export type EventType = 'payment' | 'balance' | 'charge';
+export type EventType = 'payment' | 'balance' | 'charge' | 'interest';
 
 export interface DebtEvent {
   id: string;
@@ -124,8 +127,34 @@ export function nextDue(d: Debt, todayStr: string): string | null {
   return dueOnOrAfter(from, d.payDay);
 }
 
-/** Сколько вносить в ближайший срок: минимальный платёж, но не больше остатка */
-export const dueAmount = (d: Debt) => Math.min(d.minPayment || d.balance, d.balance);
+/* ---------- проценты по займам: растут каждый день ---------- */
+/** Считаем проценты сами, если у займа МФО известны ставка и основной долг */
+export const accrues = (d: Debt) => d.kind === 'microloan' && isOpen(d) && !!d.rate && !!d.principal && !!d.accruedTo;
+/** Заём возвращают одной суммой (платёж не меньше основного долга): к сроку добавятся проценты */
+export const lumpSum = (d: Debt) => accrues(d) && (!d.minPayment || d.minPayment >= d.principal!);
+export const perDay = (d: Debt) => (accrues(d) ? round2((d.principal! * d.rate!) / 36500) : 0);
+
+/** Сколько будет к возврату в этот день, если ничего не платить */
+export function amountOn(d: Debt, date: string) {
+  if (!accrues(d)) return d.balance;
+  return round2(d.balance + ((d.principal! * d.rate!) / 36500) * Math.max(0, daysBetween(d.accruedTo!, date)));
+}
+
+/** Довести остаток займа до сегодняшнего дня; возвращает, сколько прибавилось */
+export function accrue(d: Debt, todayStr: string) {
+  if (!accrues(d) || d.accruedTo! >= todayStr) return 0;
+  const before = d.balance;
+  d.balance = amountOn(d, todayStr);
+  d.accruedTo = todayStr;
+  if (d.balance > d.start) d.start = d.balance;
+  return round2(d.balance - before);
+}
+
+/** Сколько вносить в срок due: минимальный платёж, но не больше остатка; заём одной суммой — всё, что набежит к этому дню */
+export function dueAmount(d: Debt, due?: string) {
+  if (due && lumpSum(d)) return amountOn(d, due);
+  return Math.min(d.minPayment || d.balance, d.balance);
+}
 /** Знаем ли сумму платежа: у карты без минимального платежа её знает только банк (весь долг — не платёж) */
 export const dueKnown = (d: Debt) => !!d.minPayment || d.kind !== 'card';
 
@@ -134,6 +163,8 @@ export function applyPayment(d: Debt, events: DebtEvent[], amount: number, date:
   const before = d.balance;
   const dueBefore = d.paidDue;
   d.balance = round2(Math.max(0, before - amount));
+  // Платёж сначала гасит набежавшие проценты, остаток — основной долг
+  if (d.principal) d.principal = round2(Math.max(0, d.principal - Math.max(0, amount - Math.max(0, before - d.principal))));
   const due = d.payDay ? nextDue({ ...d, balance: before }, todayStr) : null;
   if (due && d.payDay) {
     const start = prevDue(due, d.payDay);
@@ -153,6 +184,9 @@ export function applyPayment(d: Debt, events: DebtEvent[], amount: number, date:
 export function applyBalance(d: Debt, balance: number, date: string, by: string, note: string, type: EventType = 'balance'): DebtEvent {
   const before = d.balance;
   d.balance = round2(Math.max(0, balance));
+  // Остаток из выписки уже с процентами на эту дату — дальше считаем от неё
+  if (type === 'balance' && d.accruedTo) d.accruedTo = date;
+  if (d.principal && d.principal > d.balance) d.principal = d.balance;
   if (d.balance > d.start) d.start = d.balance;
   if (d.balance > 0) d.closed = false;
   else if (d.kind !== 'card') d.closed = true;
@@ -165,8 +199,30 @@ export function applyBalance(d: Debt, balance: number, date: string, by: string,
 /** Отменить событие (удалили ошибочный платёж) */
 export function revertEvent(d: Debt, e: DebtEvent) {
   d.balance = round2(Math.max(0, d.balance - e.delta));
+  // Сколько платёж списал с основного долга, не храним: возвращаем с запасом, но не больше остатка
+  if (e.type === 'payment' && d.principal !== undefined && d.principal !== null) d.principal = round2(Math.min(d.balance, d.principal + e.amount));
   if (e.dueAfter !== e.dueBefore && d.paidDue === e.dueAfter) d.paidDue = e.dueBefore;
   if (d.balance > 0) d.closed = false;
+}
+
+/**
+ * Когда просить свежую выписку по карте. Знаем день выписки — на следующий день после него
+ * (ещё 2 дня запаса, если напоминания не запускались); не знаем — за неделю до платежа.
+ * date — чтобы спросить один раз; остаток, обновлённый начиная с freshSince, уже свежий.
+ */
+export function statementAsk(d: Debt, todayStr: string): { date: string; freshSince: string; known: boolean } | null {
+  if (d.kind !== 'card' || !isOpen(d)) return null;
+  if (d.statementDay) {
+    const [y, m] = todayStr.split('-').map(Number);
+    let date = dueIn(y, m - 1, d.statementDay);
+    if (date >= todayStr) date = dueIn(y, m - 2, d.statementDay);
+    return daysBetween(date, todayStr) <= 3 ? { date, freshSince: date, known: true } : null;
+  }
+  const due = nextDue(d, todayStr);
+  if (!due) return null;
+  const left = daysBetween(todayStr, due);
+  if (left > 7 || left < 5) return null;
+  return { date: addDays(due, -7), freshSince: addDays(due, -10), known: false };
 }
 
 /* ---------- сводка ---------- */

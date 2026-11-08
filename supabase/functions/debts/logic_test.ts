@@ -1,7 +1,7 @@
 // deno test supabase/functions/debts/logic_test.ts
 import {
-  applyBalance, applyPayment, type Debt, type DebtEvent, dueIn, dueOnOrAfter, freeBy, nextDue, payoffMonths,
-  prevDue, revertEvent, setSchedule, totals,
+  accrue, amountOn, applyBalance, applyPayment, type Debt, type DebtEvent, dueAmount, dueIn, dueOnOrAfter, freeBy, lumpSum, nextDue, payoffMonths,
+  perDay, prevDue, revertEvent, setSchedule, statementAsk, totals,
 } from './logic.ts';
 
 function eq(actual: unknown, expected: unknown, msg = '') {
@@ -93,4 +93,59 @@ Deno.test('сводка и прогноз', () => {
   eq(payoffMonths(yandex, '2026-11-04'), 19, 'по дате окончания');
   eq(payoffMonths({ ...yandex, kind: 'card' }, '2026-11-04') === 19, false, 'для карты дата окончания не важна');
   eq(payoffMonths({ ...yandex, endDate: '2026-11-29', kind: 'microloan' }, '2026-11-04'), 1, 'займ в этом месяце — 1 месяц');
+});
+
+const microloan = (over: Partial<Debt> = {}) => debt({
+  kind: 'microloan', start: 11776, balance: 11776, limit: null, rate: 292, minPayment: 14812, payDay: 6, paidDue: '2026-11-06',
+  endDate: '2026-12-06', principal: 11500, accruedTo: '2026-11-03', ...over,
+});
+
+Deno.test('заём: проценты растут каждый день и к сроку сходятся с договором', () => {
+  const d = microloan();
+  eq(perDay(d), 92, 'в день');
+  eq(lumpSum(d), true, 'возврат одной суммой');
+  eq(amountOn(d, '2026-11-08'), 12236, 'на сегодня');
+  eq(amountOn(d, '2026-12-06'), 14812, 'к сроку — как в договоре');
+  eq(dueAmount(d, '2026-12-06'), 14812, 'к оплате в срок');
+
+  eq(accrue(d, '2026-11-08'), 460, 'начислено за 5 дней');
+  eq([d.balance, d.accruedTo, d.start], [12236, '2026-11-08', 12236], 'остаток и 100 %');
+  eq(accrue(d, '2026-11-08'), 0, 'второй раз за день не начисляем');
+  eq(amountOn(d, '2026-12-06'), 14812, 'после начисления прогноз тот же');
+
+  // Платёж сначала гасит набежавшие 736 ₽, остаток — основной долг
+  applyPayment(d, [], 1000, '2026-11-08', 'Лера', '', '2026-11-08');
+  eq([d.balance, d.principal], [11236, 11236], 'после платежа');
+});
+
+Deno.test('заём: без ставки или основного долга проценты не считаем, новый остаток задаёт дату отсчёта', () => {
+  const noRate = microloan({ rate: null });
+  eq(accrue(noRate, '2026-11-08'), 0, 'нет ставки');
+  eq(amountOn(noRate, '2026-12-06'), 11776, 'сумма не меняется');
+  eq(dueAmount(noRate, '2026-12-06'), 11776, 'к оплате — остаток');
+  eq(accrue(microloan({ kind: 'loan' }), '2026-11-08'), 0, 'обычный кредит не трогаем');
+
+  const d = microloan();
+  applyBalance(d, 12000, '2026-11-07', 'Лера', '');
+  eq([d.balance, d.accruedTo], [12000, '2026-11-07'], 'из выписки');
+  eq(amountOn(d, '2026-11-08'), 12092, 'считаем от новой даты');
+
+  // Заём с ежемесячным платежом меньше основного долга — не «одной суммой»
+  const monthly = microloan({ minPayment: 3000 });
+  eq(lumpSum(monthly), false);
+  eq(dueAmount(monthly, '2026-12-06'), 3000, 'к оплате — обычный платёж');
+});
+
+Deno.test('выписка: когда просить свежий скриншот', () => {
+  const known = debt({ statementDay: 12, payDay: 2, paidDue: '2026-11-02' });
+  eq(statementAsk(known, '2026-11-13'), { date: '2026-11-12', freshSince: '2026-11-12', known: true }, 'на следующий день');
+  eq(statementAsk(known, '2026-11-15')?.date, '2026-11-12', 'запас, если напоминания не запускались');
+  eq(statementAsk(known, '2026-11-16'), null, 'поздно');
+  eq(statementAsk(known, '2026-11-12'), null, 'в сам день выписки ещё рано');
+
+  const unknown = debt({ payDay: 20, paidDue: '2026-10-20' });
+  eq(statementAsk(unknown, '2026-11-13'), { date: '2026-11-13', freshSince: '2026-11-10', known: false }, 'за неделю до платежа');
+  eq(statementAsk(unknown, '2026-11-12'), null, 'ещё рано');
+  eq(statementAsk(debt({ kind: 'loan', statementDay: 12 }), '2026-11-13'), null, 'только карты');
+  eq(statementAsk(debt({ statementDay: 31 }), '2026-03-01')?.date, '2026-02-28', 'короткий месяц');
 });

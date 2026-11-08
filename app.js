@@ -9,7 +9,19 @@ const tgBack = tgVersion('6.1');
 /* ---------- настройки ---------- */
 // Серверная функция Supabase. Вне Telegram — демо-режим, данные только на этом устройстве.
 const API_URL = 'https://fpyxaygiiiivnjrujqyf.supabase.co/functions/v1/debts';
-const remote = !!(API_URL && inTelegram);
+
+// С экрана телефона приложение открывается само, без Telegram: вход по личной ссылке …/dolgi/?t=…
+// Её выдаёт кнопка «Установить» внутри Telegram. iOS запоминает адрес вместе с токеном, поэтому manifest со start_url здесь нельзя.
+const TOKEN_KEY = 'debts.token.v1';
+const appToken = inTelegram ? null : (() => {
+  const fromUrl = new URLSearchParams(location.search).get('t');
+  try {
+    if (fromUrl) localStorage.setItem(TOKEN_KEY, fromUrl);
+    return fromUrl || localStorage.getItem(TOKEN_KEY);
+  } catch { return fromUrl; }
+})();
+const standalone = window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
+const remote = !!(API_URL && (inTelegram || appToken));
 
 const KINDS = [
   { key: 'card', name: 'Кредитка', full: 'Кредитная карта' },
@@ -44,6 +56,7 @@ const ICON = {
   bell: svg('<path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0"/>'),
   phone: svg('<rect x="6" y="2.5" width="12" height="19" rx="3"/><path d="M11 18.5h2"/>'),
   offline: svg('<path d="M2 8.8a15 15 0 0 1 4.2-2.6M9.5 5.2A15 15 0 0 1 22 8.8M5 12.4a10 10 0 0 1 4.4-2.2M14.6 10.4A10 10 0 0 1 19 12.4M8.5 16a5 5 0 0 1 7 0M12 20h.01M3 3l18 18"/>'),
+  share: svg('<path d="M12 15V3M8 7l4-4 4 4"/><path d="M7 11H5v10h14V11h-2"/>'),
   bulb: svg('<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.6.6 1 1.4 1 2.5h6c0-1.1.4-1.9 1-2.5A6 6 0 0 0 12 3z"/>'),
 };
 
@@ -128,11 +141,32 @@ function nextDue(d, today) {
   if (!d.payDay || !isOpen(d)) return null;
   return dueOnOrAfter(d.paidDue ? addDays(d.paidDue, 1) : today, d.payDay);
 }
-const dueAmount = d => Math.min(d.minPayment || d.balance, d.balance);
+
+// Проценты по займу растут каждый день: считаем сами, если известны ставка и основной долг
+const accrues = d => d.kind === 'microloan' && isOpen(d) && !!d.rate && !!d.principal && !!d.accruedTo;
+const lumpSum = d => accrues(d) && (!d.minPayment || d.minPayment >= d.principal);
+const perDay = d => (accrues(d) ? round2(d.principal * d.rate / 36500) : 0);
+function amountOn(d, date) {
+  if (!accrues(d)) return d.balance;
+  return round2(d.balance + d.principal * d.rate / 36500 * Math.max(0, daysBetween(d.accruedTo, date)));
+}
+function accrue(d, today) {
+  if (!accrues(d) || d.accruedTo >= today) return 0;
+  const before = d.balance;
+  d.balance = amountOn(d, today);
+  d.accruedTo = today;
+  if (d.balance > d.start) d.start = d.balance;
+  return round2(d.balance - before);
+}
+function dueAmount(d, due) {
+  if (due && lumpSum(d)) return amountOn(d, due);
+  return Math.min(d.minPayment || d.balance, d.balance);
+}
 
 function applyPayment(d, events, amount, date, by, note, today) {
   const before = d.balance, dueBefore = d.paidDue;
   d.balance = round2(Math.max(0, before - amount));
+  if (d.principal) d.principal = round2(Math.max(0, d.principal - Math.max(0, amount - Math.max(0, before - d.principal))));
   const due = d.payDay ? nextDue({ ...d, balance: before }, today) : null;
   if (due) {
     const start = prevDue(due, d.payDay);
@@ -145,6 +179,8 @@ function applyPayment(d, events, amount, date, by, note, today) {
 function applyBalance(d, balance, date, by, note, type = 'balance') {
   const before = d.balance;
   d.balance = round2(Math.max(0, balance));
+  if (type === 'balance' && d.accruedTo) d.accruedTo = date;
+  if (d.principal && d.principal > d.balance) d.principal = d.balance;
   if (d.balance > d.start) d.start = d.balance;
   if (d.balance > 0) d.closed = false;
   else if (d.kind !== 'card') d.closed = true;
@@ -152,6 +188,7 @@ function applyBalance(d, balance, date, by, note, type = 'balance') {
 }
 function revertEvent(d, e) {
   d.balance = round2(Math.max(0, d.balance - e.delta));
+  if (e.type === 'payment' && d.principal != null) d.principal = round2(Math.min(d.balance, d.principal + e.amount));
   if (e.dueAfter !== e.dueBefore && d.paidDue === e.dueAfter) d.paidDue = e.dueBefore;
   if (d.balance > 0) d.closed = false;
 }
@@ -221,7 +258,7 @@ function seed() {
     d({ name: 'Тинькофф Платинум', kind: 'card', owner: '1', creditor: 'Т-Банк', color: 2, start: 120000, balance: 78400, limit: 150000, rate: 34.9, minPayment: 4700, notes: 'Беспроцентный период до 55 дней на покупки.' }, 4),
     d({ name: 'Альфа «100 дней»', kind: 'card', owner: '2', creditor: 'Альфа-Банк', color: 3, start: 60000, balance: 41250, limit: 80000, rate: 39.9, minPayment: 2500 }, 1),
     d({ name: 'Рассрочка М.Видео', kind: 'installment', owner: '2', creditor: 'М.Видео', color: 4, start: 36000, balance: 18000, rate: 0, minPayment: 6000, endDate: addDays(t, 85) }, 10),
-    d({ name: 'Займер', kind: 'microloan', owner: '1', creditor: 'МФО «Займер»', color: 5, start: 15000, balance: 15000, rate: 292, minPayment: 18600 }, 12),
+    d({ name: 'Займер', kind: 'microloan', owner: '1', creditor: 'МФО «Займер»', color: 5, start: 15000, balance: 15000, rate: 292, minPayment: 18600, principal: 15000, accruedTo: t, endDate: addDays(t, 12) }, 12),
     d({ name: 'Хоум Кредит', kind: 'loan', creditor: 'Хоум Банк', color: 6, start: 50000, balance: 0, rate: 24, minPayment: 4400, closed: true }),
   ];
   const ev = (debt, amount, ago, by) => ({ id: uid(), debtId: debt.id, type: 'payment', amount, delta: -amount, date: addDays(t, -ago), by, note: '', dueBefore: null, dueAfter: null, createdAt: new Date().toISOString() });
@@ -255,7 +292,7 @@ async function api(body) {
     res = await fetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...body, initData: tg.initData }),
+      body: JSON.stringify({ ...body, ...(inTelegram ? { initData: tg.initData } : { token: appToken }) }),
       signal: AbortSignal.timeout?.(20000),
     });
   } catch {
@@ -267,14 +304,23 @@ async function api(body) {
     denied = json.id || tg?.initDataUnsafe?.user?.id || '?';
     render();
   }
+  if (res.status === 401 && json.relogin) {
+    denied = 'link';
+    render();
+  }
   if (!res.ok) throw new Error(json.error || 'Нет связи с сервером');
   return json;
 }
 
+/** Записать ответ сервера; true — данные изменились и экран надо перерисовать */
 function applyState(s) {
-  data = { debts: s.debts || [], events: s.events || [], members: s.members || [], me: s.me || null, bot: s.bot || '', savedAt: Date.now() };
+  const next = { debts: s.debts || [], events: s.events || [], members: s.members || [], me: s.me || null, bot: s.bot || '' };
+  const { savedAt, ...cur } = data;
+  const changed = !loaded || JSON.stringify(next) !== JSON.stringify(cur);
+  data = { ...next, savedAt: Date.now() };
   loaded = true;
   saveLocal();
+  return changed;
 }
 
 // Перерисовать после ответа сервера, но не сбивать открытую форму
@@ -289,11 +335,12 @@ let resync = false;   // сервер что-то не принял — посл
 
 async function pull() {
   if (!remote || pending) return;
+  const wasOffline = offline;
   try {
     const s = await api({ action: 'state' });
     if (pending) return; // пока ждали, появились свежие изменения — их ответ новее
-    applyState(s);
-    refresh();
+    // Те же данные не перерисовываем: при запуске экран не должен дёргаться
+    if (applyState(s) || wasOffline) refresh();
   } catch (e) {
     if (e.offline) {
       offline = true;
@@ -400,14 +447,15 @@ function render(scrollTop, anim) {
     app.classList.add(anim);
   }
   fitLabels();
+  drawTrends();
   // во время вводной анимации полоски ещё узкие — перепроверяем подписи, когда она закончится
   if (app.querySelector('.intro')) setTimeout(fitLabels, 1100);
   if (loaded && !top && state.tab === 'home') state.intro = false;
 }
 
 // Подписи внутри полосок показываем, только если помещаются; не влезает — пробуем короткую (букву владельца)
-function fitLabels() {
-  for (const el of app.querySelectorAll('.scale [data-fit]')) {
+function fitLabels(root = app) {
+  for (const el of root.querySelectorAll('.scale [data-fit]')) {
     const span = el.firstElementChild;
     if (!span) { el.dataset.fit = 'no'; continue; }
     span.dataset.full ??= span.innerHTML;
@@ -420,7 +468,10 @@ function fitLabels() {
     el.dataset.fit = fits ? 'yes' : 'no';
   }
 }
-window.addEventListener('resize', fitLabels);
+window.addEventListener('resize', () => {
+  fitLabels();
+  drawTrends();
+});
 
 function openLink(url) {
   if (inTelegram && url.startsWith('https://t.me/')) tg.openTelegramLink(url);
@@ -489,6 +540,13 @@ const offlineLine = () => {
   const when = t ? ` · данные на ${t.getDate()} ${MONTHS_GEN[t.getMonth()]}, ${t.toTimeString().slice(0, 5)}` : '';
   return `<div class="offline">${ICON.offline}<span>Нет интернета${when}</span></div>`;
 };
+// Открыли личную ссылку в Safari: осталось поставить иконку на экран
+const installBanner = () => (appToken && !standalone ? `
+  <div class="card banner">
+    ${ICON.share}
+    <div><b>Последний шаг — иконка на экран.</b> Внизу Safari нажмите «Поделиться», затем «На экран “Домой”» и «Добавить». Дальше открывайте «Наши долги» с этой иконки: Telegram для этого не нужен.
+    <br>Если страница открылась внутри Telegram, сначала выберите «Открыть в Safari».</div>
+  </div>` : '');
 const emptyState = (title, text) => `<div class="empty"><div class="empty-title">${title}</div><p>${text}</p></div>`;
 
 // Фильтр «чей долг»; если такого владельца больше нет — показываем всех
@@ -506,9 +564,9 @@ function dueInfo(d) {
   else if (days === 1) { when = 'завтра'; cls = 'soon'; }
   else { when = `через ${days} ${plural(days, 'день', 'дня', 'дней')}`; if (days <= 3) cls = 'soon'; }
   // У карты без минимального платежа сумму знает только банк — не выдаём весь долг за платёж
-  return { due, days, when, cls, amount: dueAmount(d), known: !!d.minPayment || d.kind !== 'card' };
+  return { due, days, when, cls, amount: dueAmount(d, due), approx: lumpSum(d), known: !!d.minPayment || d.kind !== 'card' };
 }
-const dueText = i => (i.known ? money(i.amount) : 'сумма не указана');
+const dueText = i => (i.known ? `${i.approx ? '≈\u00a0' : ''}${money(i.amount)}` : 'сумма не указана');
 const dueSum = items => items.reduce((s, x) => s + (x.i.known ? x.i.amount : 0), 0);
 
 /** Шкала 100 % → 0 %: слева серым — что уже погасили, справа цветом — что осталось */
@@ -632,7 +690,7 @@ function renderHome() {
   // Микрозаймы — всегда сверху, дальше по убыванию долга, погашенные в конце
   const sorted = [...open].sort((a, b) => (b.kind === 'microloan') - (a.kind === 'microloan') || b.balance - a.balance)
     .concat(list.filter(d => !isOpen(d)));
-  const head = `${demoBanner()}
+  const head = `${demoBanner()}${installBanner()}
     <header class="hero row">
       <div>
         <div class="eyebrow">${WEEKDAYS_FULL[now.getDay()]}, ${now.getDate()} ${MONTHS_GEN[now.getMonth()]}</div>
@@ -657,11 +715,115 @@ function renderHome() {
     ${subscribeCard()}
     ${list.length ? totalCard(list) : emptyState('Здесь пусто', 'У этого человека долгов нет.')}
     ${nextCard(open)}
+    ${trendCard(list)}
     ${sorted.length ? `
       <div class="section-head lg"><h2 class="section-title lg">По отдельности</h2></div>
       <div class="grid">${sorted.map(debtCard).join('')}</div>` : ''}
     <button class="btn primary" data-go="edit">${ICON.plus}Добавить долг</button>
     <p class="hint-line">Или отправьте боту договор, график платежей или скриншот — он заполнит всё сам.</p>`;
+}
+
+/* ---------- как меняется долг ---------- */
+// Долг на дату восстанавливаем по истории: от сегодняшнего остатка откатываем всё, что случилось позже.
+// Долги первой недели учёта считаем бывшими всегда, иначе внесение данных выглядело бы как рост;
+// долг, появившийся позже, — ступенька вверх в день появления.
+function debtTrend(list) {
+  const t = today();
+  if (!list.length) return [];
+  const born = d => (d.createdAt || t).slice(0, 10);
+  const setupEnd = addDays(list.map(born).sort()[0], 7);
+  const start = list.map(born).filter(x => x <= setupEnd).sort().pop();
+  if (start >= t) return [];
+  const ids = new Set(list.map(d => d.id));
+  const events = data.events.filter(e => ids.has(e.debtId));
+  const valueOn = day => list.reduce((sum, d) => {
+    if (born(d) > setupEnd && day < born(d)) return sum;
+    const later = events.filter(e => e.debtId === d.id && e.date > day).reduce((s, e) => s + e.delta, 0);
+    return sum + Math.max(0, d.balance - later);
+  }, 0);
+  let dates;
+  if (daysBetween(start, t) > 62) {
+    dates = [start];
+    let [y, m] = start.split('-').map(Number);
+    for (;;) {
+      const end = fromTime(Date.UTC(y, m, 0));
+      if (end >= t) break;
+      if (end > start) dates.push(end);
+      m++;
+      if (m > 12) { m = 1; y++; }
+    }
+    dates.push(t);
+  } else {
+    dates = [...new Set([start, ...events.map(e => e.date).filter(x => x > start && x < t), ...list.map(born).filter(x => x > start && x < t), t])].sort();
+  }
+  return dates.map(date => ({ date, value: round2(valueOn(date)) }));
+}
+
+function trendCard(list) {
+  const pts = debtTrend(list);
+  if (pts.length < 2) return '';
+  const first = pts[0], last = pts[pts.length - 1], diff = last.value - first.value;
+  const change = Math.abs(diff) < 1 ? `Без изменений с ${dayMonth(first.date)}`
+    : `${diff < 0 ? 'Меньше' : 'Больше'} на ${money(Math.abs(diff))}, чем ${dayMonth(first.date)}`;
+  return `
+    <div class="section-head lg"><h2 class="section-title lg">Как меняется долг</h2></div>
+    <div class="card trend">
+      <div class="caption">${change}</div>
+      <div class="trend-plot" data-trend role="img" aria-label="Общий долг: ${dayMonth(first.date)} — ${money(first.value)}, сейчас — ${money(last.value)}"></div>
+    </div>`;
+}
+
+function drawTrends(root = app) {
+  const plots = root.querySelectorAll('[data-trend]');
+  if (!plots.length) return;
+  const pts = debtTrend(visibleDebts());
+  for (const el of plots) drawTrend(el, pts);
+}
+
+function drawTrend(el, pts) {
+  const w = el.clientWidth;
+  if (!w || pts.length < 2) return;
+  const h = 128, top = 26, bottom = 22, side = 6;
+  const values = pts.map(p => p.value);
+  const max = Math.max(...values), min = Math.min(...values);
+  // Запас по высоте, чтобы мелкое изменение большого долга не выглядело обвалом
+  const pad = Math.max(max * 0.04, (max - min) * 0.2, 1);
+  const lo = min - pad, hi = max + pad;
+  const t0 = toTime(pts[0].date), t1 = toTime(pts[pts.length - 1].date);
+  const x = p => side + (toTime(p.date) - t0) / (t1 - t0) * (w - side * 2);
+  const y = p => top + (hi - p.value) / (hi - lo) * (h - top - bottom);
+  const first = pts[0], last = pts[pts.length - 1];
+  const short = s => `${Number(s.slice(8, 10))} ${MONTHS_SHORT[Number(s.slice(5, 7)) - 1]}`;
+  el.innerHTML = `
+    <svg viewBox="0 0 ${w} ${h}" aria-hidden="true">
+      <line class="trend-grid" x1="0" x2="${w}" y1="${h - bottom + .5}" y2="${h - bottom + .5}"/>
+      <path class="trend-line" d="${pts.map((p, i) => `${i ? 'L' : 'M'}${x(p).toFixed(1)} ${y(p).toFixed(1)}`).join('')}"/>
+      <circle class="trend-dot" cx="${x(last).toFixed(1)}" cy="${y(last).toFixed(1)}" r="4"/>
+      <text class="trend-val" x="${side}" y="${(y(first) - 10).toFixed(1)}">${money(first.value)}</text>
+      <text class="trend-val" x="${w - side}" y="${(y(last) - 10).toFixed(1)}" text-anchor="end">${money(last.value)}</text>
+      <text class="trend-x" x="${side}" y="${h - 5}">${short(first.date)}</text>
+      <text class="trend-x" x="${w - side}" y="${h - 5}" text-anchor="end">сегодня</text>
+      <line class="trend-cross" y1="${top - 8}" y2="${h - bottom}" style="display:none"/>
+      <circle class="trend-focus" r="4" style="display:none"/>
+    </svg>
+    <div class="trend-tip" hidden></div>`;
+  const cross = el.querySelector('.trend-cross'), focus = el.querySelector('.trend-focus'), tipEl = el.querySelector('.trend-tip');
+  let timer;
+  const hide = () => { cross.style.display = focus.style.display = 'none'; tipEl.hidden = true; };
+  const show = e => {
+    clearTimeout(timer);
+    const px = e.clientX - el.getBoundingClientRect().left;
+    const p = pts.reduce((a, b) => (Math.abs(x(b) - px) < Math.abs(x(a) - px) ? b : a));
+    cross.setAttribute('x1', x(p)); cross.setAttribute('x2', x(p));
+    focus.setAttribute('cx', x(p)); focus.setAttribute('cy', y(p));
+    cross.style.display = focus.style.display = '';
+    tipEl.textContent = `${short(p.date)} · ${money(p.value)}`;
+    tipEl.hidden = false;
+    tipEl.style.left = `${Math.min(w - tipEl.offsetWidth / 2, Math.max(tipEl.offsetWidth / 2, x(p)))}px`;
+  };
+  el.onpointerdown = el.onpointermove = show;
+  el.onpointerleave = hide;
+  el.onpointerup = () => { timer = setTimeout(hide, 1500); };
 }
 
 /* ---------- платежи ---------- */
@@ -713,9 +875,9 @@ function renderPayments() {
 
 function eventRow(e, inDebt = false) {
   const d = findDebt(e.debtId);
-  const label = e.type === 'payment' ? 'Платёж' : e.type === 'charge' ? 'Долг вырос' : 'Новый остаток';
+  const label = e.type === 'payment' ? 'Платёж' : e.type === 'charge' ? 'Долг вырос' : e.type === 'interest' ? 'Начислены проценты' : 'Новый остаток';
   const sum = e.type === 'payment' ? `<b class="minus">−${money(e.amount)}</b>`
-    : e.type === 'charge' ? `<b class="plus">+${money(e.amount)}</b>` : `<b>${money(e.amount)}</b>`;
+    : e.type === 'charge' || e.type === 'interest' ? `<b class="plus">+${money(e.amount)}</b>` : `<b>${money(e.amount)}</b>`;
   const sub = [dayMonth(e.date), e.by, e.note].filter(Boolean).join(' · ');
   return `
     <button class="row" data-action="event" data-id="${e.id}">
@@ -730,7 +892,7 @@ function eventRow(e, inDebt = false) {
 
 /* ---------- важное ---------- */
 // Проценты за месяц — оценка по ставке и остатку, без учёта беспроцентных периодов
-const monthlyInterest = d => (isOpen(d) && d.rate ? d.balance * d.rate / 1200 : 0);
+const monthlyInterest = d => (isOpen(d) && d.rate ? (d.principal || d.balance) * d.rate / 1200 : 0);
 
 /** Что стоит знать о долгах: { level: warn|info, icon, title, text, rows: [{ d, value, go }] } */
 function insights(list) {
@@ -776,7 +938,7 @@ function insights(list) {
   if (planned.length) out.push({ level: 'info', icon: ICON.check, title: 'Закроются по графику',
     rows: planned.map(d => ({ d, value: `${dayMonth(d.endDate)} ${d.endDate.slice(0, 4)}` })) });
 
-  const missing = open.map(d => ({ d, what: [!d.minPayment && 'платёж', !d.payDay && 'дата', d.rate == null && 'ставка'].filter(Boolean) })).filter(x => x.what.length);
+  const missing = open.map(d => ({ d, what: [!d.minPayment && 'платёж', !d.payDay && 'дата', d.rate == null && 'ставка', d.kind === 'microloan' && !d.principal && 'основной долг'].filter(Boolean) })).filter(x => x.what.length);
   if (missing.length) out.push({ level: 'info', icon: ICON.edit, title: 'Не хватает данных',
     text: 'Без них бот не напомнит точную сумму, а прогноз будет неточным.',
     rows: missing.map(x => ({ d: x.d, value: `нет: ${x.what.join(', ')}`, go: 'edit' })) });
@@ -787,6 +949,7 @@ function insights(list) {
 function renderTips() {
   const list = visibleDebts();
   const items = insights(list);
+  loadLinks();
   const ask = data.bot || !remote ? `<button class="chip ghost" data-action="ask">${ICON.chat}Спросить бота</button>` : '';
   return `
     ${demoBanner()}
@@ -803,22 +966,54 @@ function renderTips() {
           ${x.ask ? ask : ''}
         </div>
       </div>`).join('') : emptyState('Всё спокойно', 'Здесь появятся ближайшие платежи, превышения лимита и другие вещи, которые стоит знать.')}
-    ${homeCard()}`;
+    ${calendarCard()}
+    ${phoneCard()}`;
 }
+
+/* ---------- личные ссылки: календарь и приложение на экране ---------- */
+// Токены получаем заранее: внешнюю ссылку Telegram открывает только сразу после нажатия
+const links = {};
+let linksAsked = false;
+function loadLinks() {
+  if (linksAsked || !remote) return;
+  linksAsked = true;
+  for (const kind of inTelegram ? ['calendar', 'app'] : ['calendar']) {
+    api({ action: 'token', kind }).then(r => { links[kind] = r.token; }).catch(() => { linksAsked = false; });
+  }
+}
+function openPersonal(kind) {
+  const token = links[kind];
+  if (!token) {
+    loadLinks();
+    return toast('Секунду — готовлю ссылку, нажмите ещё раз');
+  }
+  const webcal = `${API_URL.replace(/^https:/, 'webcal:')}/calendar?token=${token}`;
+  if (!inTelegram) { location.href = webcal; return; }
+  // Из Telegram календарь напрямую не открыть: промежуточная страница передаёт адрес в Safari (после # — на сервер не уходит)
+  const base = location.origin + location.pathname.replace(/[^/]*$/, '');
+  tg.openLink(kind === 'app' ? `${base}?t=${token}` : `${base}calendar.html#${webcal}`, { try_browser: 'safari' });
+}
+const linkCard = (icon, title, text, action, label) => `
+  <div class="card insight">
+    <div class="ico">${icon}</div>
+    <div class="insight-main">
+      <div class="insight-title">${title}</div>
+      <p>${text}</p>
+      <button class="chip ghost" data-action="${action}">${ICON.plus}${label}</button>
+    </div>
+  </div>`;
+const calendarCard = () => (remote ? linkCard(ICON.calendar, 'Платежи в Календаре телефона',
+  'Все даты появятся в обычном Календаре и будут обновляться сами. Напоминание придёт накануне, даже если Telegram заглушён.', 'calendar', 'Подключить') : '');
 
 /* ---------- иконка на экране телефона ---------- */
 let homeStatus = null; // missing | added | unknown | unsupported — так отвечает Telegram
-function homeCard() {
+// На iPhone — настоящее отдельное приложение: иконка Telegram всё равно сначала запускает Telegram
+function phoneCard() {
+  if (!inTelegram) return '';
+  if (tg.platform === 'ios') return linkCard(ICON.phone, 'Отдельное приложение на iPhone',
+    'Своя иконка на экране: открывается сразу, без Telegram, и работает без интернета.', 'install', 'Установить');
   if (!['missing', 'unknown'].includes(homeStatus)) return '';
-  return `
-    <div class="card insight">
-      <div class="ico">${ICON.phone}</div>
-      <div class="insight-main">
-        <div class="insight-title">Иконка на экране телефона</div>
-        <p>«Наши долги» будут открываться одним нажатием, как обычное приложение, — без поиска чата с ботом.</p>
-        <button class="chip ghost" data-action="home-screen">${ICON.plus}Добавить на экран</button>
-      </div>
-    </div>`;
+  return linkCard(ICON.phone, 'Иконка на экране телефона', '«Наши долги» будут открываться одним нажатием, без поиска чата с ботом.', 'home-screen', 'Добавить на экран');
 }
 function checkHome() {
   if (!tgVersion('8.0') || !tg.checkHomeScreenStatus) return;
@@ -833,6 +1028,22 @@ function checkHome() {
 const TABS = { home: renderHome, payments: renderPayments, tips: renderTips };
 
 /* ---------- экран долга ---------- */
+// Заём: сумма растёт каждый день, поэтому показываем её на сегодня и к сроку
+function accrualCard(d, i) {
+  if (d.kind !== 'microloan' || !isOpen(d)) return '';
+  if (!accrues(d)) {
+    return `<div class="card banner tap" data-go="edit" data-id="${d.id}">${ICON.bell}<div><b>Проценты растут каждый день.</b> Укажите ставку и основной долг — покажу точную сумму на сегодня и к дате возврата.</div></div>`;
+  }
+  const t = today();
+  const due = i?.due && i.due > t ? i.due : null;
+  return `
+    <div class="card accrual">
+      <div><span>Сегодня к возврату</span><b class="num">≈\u00a0${money(amountOn(d, t))}</b></div>
+      ${due ? `<div><span>К ${dayMonth(due)} будет</span><b class="num">≈\u00a0${money(amountOn(d, due))}</b></div>` : ''}
+      <div class="card-foot">Основной долг ${money(d.principal)} · проценты ≈\u00a0${money(perDay(d))} в день</div>
+    </div>`;
+}
+
 function notFound() {
   return navBar('') + emptyState('Долг не найден', 'Возможно, его удалили.');
 }
@@ -871,6 +1082,7 @@ function renderDebt({ id }) {
       ${scaleBar([d], 'md')}
       <div class="card-foot">Погашено <b>${money(Math.max(0, d.start - d.balance))}</b></div>
     </div>
+    ${accrualCard(d, i)}
 
     <div class="actions">
       <button class="action" data-go="op" data-kind="payment" data-id="${d.id}">${ICON.check}<span>Платёж</span></button>
@@ -894,6 +1106,7 @@ function renderDebt({ id }) {
       ${infoRow('Ставка', d.rate !== null && d.rate !== undefined ? `${nf1.format(d.rate)}% годовых` : '—')}
       ${infoRow(d.kind === 'card' ? 'Минимальный платёж' : 'Ежемесячный платёж', d.minPayment ? money(d.minPayment) : '—')}
       ${infoRow('День платежа', d.payDay ? `${d.payDay}-е число` : '—')}
+      ${d.kind === 'card' ? infoRow('День выписки', d.statementDay ? `${d.statementDay}-е число` : 'за неделю до платежа спрошу скрин') : ''}
       ${d.kind === 'card' || d.limit ? infoRow('Кредитный лимит', d.limit ? money(d.limit) : '—') : ''}
       ${d.endDate ? infoRow('Окончание', `${dayMonth(d.endDate)} ${d.endDate.slice(0, 4)}`) : ''}
       ${infoRow('Закроется', forecastText(d))}
@@ -945,6 +1158,7 @@ function renderEdit({ id }) {
         ${moneyField('Осталось', 'balance', d?.balance, '0', 'required')}
         ${moneyField('Было (100%)', 'start', d?.start, 'как «осталось»')}
         ${moneyField('Лимит карты', 'limit', d?.limit)}
+        ${field('Основной долг', `<input name="principal" inputmode="decimal" placeholder="без процентов" value="${groupNum(d?.principal)}"><em>₽</em>`, 'num only-microloan')}
       </div>
       <p class="form-hint">«Было» — сумма кредита по договору или долг на момент, с которого считаете. От неё шкала идёт к 0%.</p>
 
@@ -954,8 +1168,9 @@ function renderEdit({ id }) {
         ${field('Ближайший', `<input name="nextPayment" type="date" value="${esc(next || '')}">`)}
         ${field('Ставка', `<input name="rate" inputmode="decimal" placeholder="0" value="${groupNum(d?.rate)}"><em>%</em>`, 'num')}
         ${field('Окончание', `<input name="endDate" type="date" value="${esc(d?.endDate || '')}">`)}
+        ${field('День выписки', `<input name="statementDay" inputmode="numeric" maxlength="2" placeholder="1–31" value="${d?.statementDay ?? ''}"><em>число</em>`, 'num only-card')}
       </div>
-      <p class="form-hint">По дате ближайшего платежа бот поймёт число месяца и будет напоминать за 3 дня, накануне и в день оплаты. Ставка — % годовых.</p>
+      <p class="form-hint">По дате ближайшего платежа бот поймёт число месяца и будет напоминать за 3 дня, накануне и в день оплаты. Ставка — % годовых. После дня выписки бот попросит свежий скриншот из банка. У займа по основному долгу и ставке проценты считаются сами каждый день.</p>
 
       <h2 class="section-title">Цвет на графике</h2>
       <div class="swatches">${[1, 2, 3, 4, 5, 6, 7, 8].map(c =>
@@ -980,9 +1195,11 @@ function renderOp({ id, kind }) {
   if (!d) return notFound();
   const op = OPS[kind] || OPS.payment;
   const i = dueInfo(d);
-  const value = kind === 'payment' ? (i?.known ? i.amount : d.minPayment || '') : kind === 'balance' ? d.balance : '';
+  // Заём одной суммой платят по сегодняшнему остатку, а не по прогнозу к сроку
+  const owed = amountOn(d, today());
+  const value = kind === 'payment' ? (lumpSum(d) ? owed : i?.known ? i.amount : d.minPayment || '') : kind === 'balance' ? d.balance : '';
   const quick = kind === 'payment' && d.balance > 0
-    ? [d.minPayment && d.minPayment < d.balance ? ['Минимум', d.minPayment] : null, ['Весь долг', d.balance]].filter(Boolean) : [];
+    ? [d.minPayment && d.minPayment < owed && !lumpSum(d) ? ['Минимум', d.minPayment] : null, ['Весь долг', owed]].filter(Boolean) : [];
   return `
     <form data-form="op" data-id="${d.id}" data-kind="${kind}" autocomplete="off">
       ${navBar(op.title, '<button class="nav-link strong" type="submit">Готово</button>')}
@@ -996,12 +1213,19 @@ function renderOp({ id, kind }) {
         ${field('Дата', `<input name="date" type="date" value="${today()}" max="${today()}" required>`)}
         ${field('Комментарий', '<input name="note" maxlength="120" placeholder="необязательно">')}
       </div>
-      ${kind === 'payment' && i?.known ? `<p class="form-hint">Если внесёте не меньше ${money(i.amount)}, платёж за ${dayMonth(i.due)} отметится как оплаченный.</p>` : ''}
+      ${kind === 'payment' && i?.known && !lumpSum(d) ? `<p class="form-hint">Если внесёте не меньше ${money(i.amount)}, платёж за ${dayMonth(i.due)} отметится как оплаченный.</p>` : ''}
       <button class="btn primary" type="submit">${op.btn}</button>
     </form>`;
 }
 
 function renderDenied() {
+  if (denied === 'link') {
+    return `
+    <div class="card empty" style="margin-top:40px">
+      <div class="empty-title">Ссылка больше не действует</div>
+      <p>Откройте бота в Telegram, вкладку «Важное» в приложении и установите его заново.</p>
+    </div>`;
+  }
   return `
     <div class="card empty" style="margin-top:40px">
       <div class="empty-title">Нет доступа</div>
@@ -1026,6 +1250,8 @@ function saveEdit(form) {
     limit: parseNum(fd.get('limit')),
     minPayment: parseNum(fd.get('minPayment')),
     rate: parseNum(fd.get('rate')),
+    principal: parseNum(fd.get('principal')),
+    statementDay: parseInt(fd.get('statementDay'), 10) || null,
     nextPayment: fd.get('nextPayment') || null,
     endDate: fd.get('endDate') || null,
     color: Number(fd.get('color')) || 1,
@@ -1040,14 +1266,15 @@ function saveEdit(form) {
     if (id) {
       const d = findDebt(id);
       const prevNext = nextDue(d, t);
-      Object.assign(d, { name: input.name, creditor: input.creditor, kind: input.kind, owner: input.owner, limit: input.limit, minPayment: input.minPayment, rate: input.rate, endDate: input.endDate, color: input.color, notes: input.notes });
+      Object.assign(d, { name: input.name, creditor: input.creditor, kind: input.kind, owner: input.owner, limit: input.limit, minPayment: input.minPayment, rate: input.rate, endDate: input.endDate, color: input.color, notes: input.notes, principal: input.principal, statementDay: input.statementDay });
+      if (d.kind === 'microloan' && d.rate && d.principal && !d.accruedTo) d.accruedTo = t;
       if (input.start !== null) d.start = input.start;
       if (input.nextPayment && input.nextPayment !== prevNext) setSchedule(d, t, null, input.nextPayment);
       if (!input.nextPayment) setSchedule(d, t, null, null);
       if (input.balance !== d.balance) data.events.push({ ...applyBalance(d, input.balance, t, meName(), 'Остаток изменён вручную'), id: eventId });
       d.start = Math.max(d.start, d.balance);
     } else {
-      const d = { id: debtId, ...input, start: Math.max(input.start ?? 0, input.balance), payDay: null, paidDue: null, files: [], closed: false, createdAt: new Date().toISOString() };
+      const d = { id: debtId, ...input, start: Math.max(input.start ?? 0, input.balance), payDay: null, paidDue: null, files: [], closed: false, createdAt: new Date().toISOString(), accruedTo: input.kind === 'microloan' && input.rate && input.principal ? t : null };
       delete d.nextPayment;
       setSchedule(d, t, null, input.nextPayment);
       data.debts.push(d);
@@ -1068,8 +1295,8 @@ function saveOp(form) {
   const note = String(fd.get('note') || '').trim();
   const d0 = findDebt(id);
   // Лишний ноль — частая опечатка: платёж больше долга сначала переспрашиваем
-  if (kind === 'payment' && d0 && amount > d0.balance + 0.5 && !form.dataset.over) {
-    return confirmAsk(`Это больше всего долга (${money(d0.balance)}). Записать и считать долг погашенным?`, ok => {
+  if (kind === 'payment' && d0 && amount > amountOn(d0, today()) + 0.5 && !form.dataset.over) {
+    return confirmAsk(`Это больше всего долга (${money(amountOn(d0, today()))}). Записать и считать долг погашенным?`, ok => {
       if (!ok) return;
       form.dataset.over = '1';
       saveOp(form);
@@ -1078,6 +1305,7 @@ function saveOp(form) {
   const eventId = uid();
   const ok = mutate({ action: kind === 'payment' ? 'pay' : kind, debtId: id, amount, date, note, eventId }, () => {
     const d = findDebt(id);
+    if (kind === 'payment') accrue(d, today());
     const e = kind === 'payment'
       ? applyPayment(d, data.events, amount, date, meName(), note, today())
       : kind === 'charge'
@@ -1115,6 +1343,8 @@ async function handleAction(action, id, el) {
     tick();
     return render();
   }
+  if (action === 'calendar') return openPersonal('calendar');
+  if (action === 'install') return openPersonal('app');
   if (action === 'home-screen') {
     try { tg.addToHomeScreen(); } catch { toast('Эта версия Telegram не умеет добавлять иконку'); }
     return;
@@ -1152,7 +1382,7 @@ async function handleAction(action, id, el) {
   }
   if (action === 'event') {
     const e = data.events.find(x => x.id === id);
-    if (!e) return;
+    if (!e || e.type === 'interest') return;
     const what = e.type === 'payment' ? `платёж ${money(e.amount)}` : 'эту запись';
     return confirmAsk(`Удалить ${what} от ${dayMonth(e.date)}? Остаток долга вернётся как было.`, ok => ok && deleteEvent(id));
   }
@@ -1234,6 +1464,77 @@ document.addEventListener('focusin', e => {
 document.addEventListener('focusout', () => { tip.hidden = true; });
 window.addEventListener('scroll', () => { tip.hidden = true; }, { passive: true });
 
+/* ---------- смахивание вправо = назад ---------- */
+// Палец ведёт экран, под ним уже виден предыдущий — как в обычных приложениях iPhone.
+// Не мешаем полям ввода и вертикальной прокрутке.
+const SWIPE_SKIP = 'input, textarea, select, .swatches, .chips, [data-trend]';
+let swipe = null;
+
+function swipeLayer() {
+  const prev = state.stack[state.stack.length - 2];
+  const layer = document.createElement('div');
+  layer.id = 'under';
+  layer.setAttribute('aria-hidden', 'true');
+  layer.innerHTML = `<div class="under-col">${prev ? SCREENS[prev.type](prev) : offlineLine() + TABS[state.tab]()}</div>`;
+  document.body.prepend(layer);
+  fitLabels(layer);
+  drawTrends(layer);
+  if (!prev) tabbar.hidden = false;
+  return layer;
+}
+
+document.addEventListener('touchstart', e => {
+  swipe = null;
+  if (e.touches.length !== 1 || !state.stack.length || denied || document.querySelector('.sheet-wrap')) return;
+  if (e.target.closest?.(SWIPE_SKIP) || document.activeElement?.matches?.('input, textarea')) return;
+  const p = e.touches[0];
+  swipe = { x: p.clientX, y: p.clientY, at: e.timeStamp, dx: 0, on: false, layer: null };
+}, { passive: true });
+
+document.addEventListener('touchmove', e => {
+  if (!swipe) return;
+  const p = e.touches[0];
+  const dx = p.clientX - swipe.x, dy = p.clientY - swipe.y;
+  if (!swipe.on) {
+    if (Math.hypot(dx, dy) < 10) return;
+    if (dx <= 0 || Math.abs(dy) > dx * 0.6) { swipe = null; return; }
+    swipe.on = true;
+    app.classList.remove('push', 'pop');
+    document.body.classList.add('swiping');
+    swipe.layer = swipeLayer();
+  }
+  if (e.cancelable) e.preventDefault();
+  swipe.dx = Math.max(0, dx);
+  app.style.transform = `translate3d(${swipe.dx}px, 0, 0)`;
+  swipe.layer.style.transform = `translate3d(${(swipe.dx / window.innerWidth - 1) * 28}%, 0, 0)`;
+}, { passive: false });
+
+function endSwipe(e) {
+  const s = swipe;
+  swipe = null;
+  if (!s?.on) return;
+  const w = window.innerWidth;
+  const fast = s.dx > 48 && s.dx / Math.max(1, e.timeStamp - s.at) > 0.5;
+  const leave = e.type === 'touchend' && (s.dx > w * 0.3 || fast);
+  app.style.transition = s.layer.style.transition = 'transform .2s ease-out';
+  app.style.transform = leave ? `translate3d(${w}px, 0, 0)` : 'translate3d(0, 0, 0)';
+  s.layer.style.transform = leave ? 'translate3d(0, 0, 0)' : 'translate3d(-28%, 0, 0)';
+  setTimeout(() => {
+    app.style.transition = app.style.transform = '';
+    document.body.classList.remove('swiping');
+    s.layer.remove();
+    if (leave) {
+      state.stack.pop();
+      tick();
+      render(true);
+    } else {
+      tabbar.hidden = !!state.stack.length;
+    }
+  }, 210);
+}
+document.addEventListener('touchend', endSwipe);
+document.addEventListener('touchcancel', endSwipe);
+
 /* ---------- старт ---------- */
 function applyTheme() {
   if (!inTelegram) return;
@@ -1247,12 +1548,12 @@ function applyTheme() {
 }
 
 if (inTelegram) {
-  tg.ready();
   tg.expand();
   applyTheme();
   tg.onEvent('themeChanged', applyTheme);
   if (tgBack) tg.BackButton.onClick(back);
-  if (tgVersion('8.0') && ['ios', 'android'].includes(tg.platform)) {
+  // Кнопка «Открыть» уже запускает на весь экран (режим задан в BotFather); повторная просьба заставила бы экран дёрнуться
+  if (tgVersion('8.0') && ['ios', 'android'].includes(tg.platform) && !tg.isFullscreen) {
     try { tg.requestFullscreen(); } catch { /* не поддерживается */ }
   }
   if (tgVersion('7.7')) tg.disableVerticalSwipes();
@@ -1262,9 +1563,17 @@ if (inTelegram) {
     toast('Иконка добавлена на экран');
     refresh();
   });
+  // Отступы от шапки Telegram приходят уже после запуска: запоминаем их, чтобы в следующий раз экран сразу стоял на месте (см. index.html)
+  const saveInsets = () => {
+    if (tg.isFullscreen) writeJSON('debts.insets.v1', { t: tg.safeAreaInset?.top || 0, c: tg.contentSafeAreaInset?.top || 0 });
+  };
+  tg.onEvent('safeAreaChanged', saveInsets);
+  tg.onEvent('contentSafeAreaChanged', saveInsets);
 }
 
 render();
+// «Готово» говорим только после первого кадра: до этого Telegram держит заставку, и не видно, как экран собирается
+if (inTelegram) requestAnimationFrame(() => requestAnimationFrame(() => tg.ready()));
 
 if (remote) {
   pull();

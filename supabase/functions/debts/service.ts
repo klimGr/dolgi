@@ -2,7 +2,7 @@
 import { ALLOWED, TZ } from './config.ts';
 import * as db from './db.ts';
 import {
-  applyBalance, applyPayment, type Debt, type DebtFile, type EventType, freeColor, isDate, type Kind, KINDS, revertEvent,
+  accrue, applyBalance, applyPayment, type Debt, type DebtFile, type EventType, freeColor, isDate, type Kind, KINDS, revertEvent,
   round2, setSchedule, today, uid,
 } from './logic.ts';
 
@@ -25,6 +25,8 @@ export interface DebtInput {
   endDate?: string | null;
   notes?: string;
   closed?: boolean;
+  principal?: number | null;
+  statementDay?: number | null;
 }
 
 const text = (v: unknown, max = 120) => String(v ?? '').trim().slice(0, max);
@@ -32,6 +34,14 @@ const amount = (v: unknown): number | null => {
   if (v === null || v === undefined || v === '') return null;
   const n = typeof v === 'number' ? v : Number(String(v).replace(/\s/g, '').replace(',', '.'));
   return Number.isFinite(n) && n >= 0 ? round2(n) : null;
+};
+const dayOf = (v: unknown) => {
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 1 && n <= 31 ? n : null;
+};
+/** Как только у займа есть ставка и основной долг, начинаем считать проценты с этого дня */
+const startAccrual = (d: Debt, t: string) => {
+  if (d.kind === 'microloan' && d.rate && d.principal && !d.accruedTo) d.accruedTo = t;
 };
 const kindOf = (v: unknown): Kind => (KINDS.includes(v as Kind) ? (v as Kind) : 'loan');
 const ownerOf = (v: unknown) => (v && ALLOWED.has(String(v)) ? String(v) : 'common');
@@ -70,8 +80,12 @@ export async function createDebt(input: DebtInput, file?: DebtFile, id?: string)
     files: file ? [file] : [],
     closed: input.closed === true,
     createdAt: new Date().toISOString(),
+    principal: amount(input.principal),
+    accruedTo: null,
+    statementDay: dayOf(input.statementDay),
   };
   setSchedule(d, today(TZ), Number(input.payDay) || null, input.nextPayment);
+  startAccrual(d, today(TZ));
   await db.saveDebt(d);
   return d;
 }
@@ -92,6 +106,8 @@ export async function updateDebt(id: string, input: DebtInput, by: string, file?
   if (has('endDate')) d.endDate = isDate(input.endDate) ? input.endDate : null;
   if (has('notes')) d.notes = text(input.notes, 2000);
   if (has('start') && amount(input.start) !== null) d.start = amount(input.start)!;
+  if (has('principal')) d.principal = amount(input.principal);
+  if (has('statementDay')) d.statementDay = dayOf(input.statementDay);
   if (file && !d.files.some(f => f.id === file.id)) d.files = [...d.files, file];
 
   const t = today(TZ);
@@ -104,6 +120,7 @@ export async function updateDebt(id: string, input: DebtInput, by: string, file?
     await db.insertEvent({ ...applyBalance(d, newBalance, t, by, 'Остаток изменён вручную'), id: idOr(eventId) });
   }
   d.start = Math.max(d.start, d.balance);
+  startAccrual(d, t);
   if (has('closed')) d.closed = input.closed === true;
 
   await db.saveDebt(d);
@@ -121,6 +138,9 @@ export async function pay(debtId: string, sum: unknown, date: unknown, by: strin
   if (!value) throw new UserError('Сумма платежа должна быть больше нуля');
   const t = today(TZ);
   const day = isDate(date) ? date : t;
+  // Платят сегодняшнюю сумму: сначала доводим проценты до этого дня
+  const added = accrue(d, t);
+  if (added) await db.addInterest(d, added, t);
   const recent = await db.events(100, debtId);
   const e = applyPayment(d, recent, value, day, by, text(note, 300), t);
   e.id = idOr(eventId);
